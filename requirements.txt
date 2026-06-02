@@ -1,16 +1,7 @@
-sentence-transformers
-hnswlib
-pandas
-openai
-python-dotenv
-sqlalchemy
-psycopg2-binary
-psycopg2
-Flask
-instructor
-pydantic
-anthropic
-elasticsearch
-tiktoken
-pytest
-tqdm
+# Dependencies are declared in pyproject.toml.
+# Install the package in editable mode with evaluation + dev extras:
+#
+#   pip install -e ".[eval,dev]"
+#
+# This file installs the same set for convenience.
+-e .[eval,dev]

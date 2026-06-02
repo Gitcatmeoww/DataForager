@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dataforager"
+version = "0.1.0"
+description = "DataForager: flexible, need-aligned dataset search via hypothetical schema embeddings (HySE)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "gitcat" }]
+keywords = [
+    "dataset-search",
+    "dataset-discovery",
+    "table-retrieval",
+    "hypothetical-schema",
+    "semantic-search",
+]
+
+# Core runtime dependencies (the dataforager library + API service).
+dependencies = [
+    "flask>=3.0",
+    "flask-cors>=4.0",
+    "openai>=1.40",
+    "instructor>=1.0",
+    "pydantic>=2.5",
+    "psycopg2-binary>=2.9",
+    "python-dotenv>=1.0",
+    "numpy>=1.26",
+    "tiktoken>=0.7",
+]
+
+[project.optional-dependencies]
+# Dependencies needed only to run the evaluation suite (evaluation/).
+eval = [
+    "pandas>=2.0",
+    "elasticsearch>=8.0",
+    "scipy>=1.11",
+    "tqdm>=4.66",
+    "huggingface-hub>=0.23",
+    "datasets>=2.19",
+]
+# Development / testing tooling.
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "evaluation"]
+python_files = ["test_*.py"]
