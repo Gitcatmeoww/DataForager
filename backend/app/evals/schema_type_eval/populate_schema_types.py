@@ -54,13 +54,13 @@ class SchemaTypePopulator:
             df = pd.read_csv(self.csv_path)
 
             # Validate required columns
-            required_columns = ['table_name', 'schema_type']
+            required_columns = ['table_name', 'schema_type', 'should_include']
             missing_columns = set(required_columns) - set(df.columns)
             if missing_columns:
                 raise ValueError(f"Missing required columns: {missing_columns}")
 
             # Clean and validate data
-            df = df.dropna(subset=['table_name', 'schema_type'])
+            df = df.dropna(subset=['table_name', 'schema_type', 'should_include'])
 
             # Normalize whitespace in table_name and database_name
             df['table_name'] = df['table_name'].astype(str).str.strip()
@@ -78,6 +78,13 @@ class SchemaTypePopulator:
             invalid_types = set(df['schema_type'].unique()) - valid_schema_types
             if invalid_types:
                 raise ValueError(f"Invalid schema_type values found: {invalid_types}")
+
+            # Validate should_include values
+            valid_should_include = {'Y', 'N'}
+            df['should_include'] = df['should_include'].astype(str).str.strip().str.upper()
+            invalid_should_include = set(df['should_include'].unique()) - valid_should_include
+            if invalid_should_include:
+                raise ValueError(f"Invalid should_include values found: {invalid_should_include}")
 
             # Check for duplicates in composite key but keep all records for sequential approach
             duplicates = df[df.duplicated(subset=['composite_key'], keep=False)]
@@ -104,6 +111,11 @@ class SchemaTypePopulator:
             distribution = df['schema_type'].value_counts()
             for schema_type, count in distribution.items():
                 logging.info(f"  {schema_type}: {count}")
+
+            logging.info(f"Should include distribution:")
+            should_include_dist = df['should_include'].value_counts()
+            for value, count in should_include_dist.items():
+                logging.info(f"  {value}: {count}")
 
             return df
 
@@ -224,6 +236,7 @@ class SchemaTypePopulator:
                     # Found a match - prepare update
                     matched_updates.append((
                         csv_row['schema_type'],
+                        csv_row['should_include'],
                         db_record['table_name'],  # Use exact database values
                         db_record['database_name'],
                         db_record['row_num']
@@ -247,7 +260,7 @@ class SchemaTypePopulator:
 
                 cursor.executemany("""
                     UPDATE eval_data_validation
-                    SET schema_type = %s
+                    SET schema_type = %s, should_include = %s
                     WHERE table_name = %s AND database_name = %s AND row_num = %s
                 """, batch)
 
@@ -281,7 +294,8 @@ class SchemaTypePopulator:
                 SELECT
                     COUNT(*) as total_records,
                     COUNT(schema_type) as populated_records,
-                    COUNT(*) - COUNT(schema_type) as null_records
+                    COUNT(*) - COUNT(schema_type) as null_records,
+                    COUNT(should_include) as should_include_populated
                 FROM eval_data_validation
             """)
             stats = cursor.fetchone()
@@ -296,18 +310,32 @@ class SchemaTypePopulator:
             """)
             distribution = cursor.fetchall()
 
+            # Check should_include distribution
+            cursor.execute("""
+                SELECT should_include, COUNT(*) as count
+                FROM eval_data_validation
+                WHERE should_include IS NOT NULL
+                GROUP BY should_include
+                ORDER BY should_include
+            """)
+            should_include_dist = cursor.fetchall()
+
             logging.info("Population verification:")
             logging.info(f"  Total records: {stats['total_records']}")
             logging.info(f"  Populated records: {stats['populated_records']}")
             logging.info(f"  NULL records: {stats['null_records']}")
+            logging.info(f"  Should include populated: {stats['should_include_populated']}")
             logging.info("  Schema type distribution:")
             for row in distribution:
                 logging.info(f"    {row['schema_type']}: {row['count']}")
+            logging.info("  Should include distribution:")
+            for row in should_include_dist:
+                logging.info(f"    {row['should_include']}: {row['count']}")
 
             cursor.close()
             conn.close()
 
-            return stats, distribution
+            return stats, distribution, should_include_dist
 
         except Exception as e:
             logging.error(f"Error verifying population: {e}")
@@ -327,13 +355,16 @@ class SchemaTypePopulator:
             updated_count = self.populate_schema_types_by_composite_key(csv_df)
 
             # Step 3: Verify population
-            stats, distribution = self.verify_population()
+            stats, distribution, should_include_dist = self.verify_population()
 
             logging.info("✅ Schema type population completed successfully!")
             logging.info(f"Final results: Updated {updated_count} records")
             logging.info(f"Schema type distribution from database:")
             for row in distribution:
                 logging.info(f"  {row['schema_type']}: {row['count']}")
+            logging.info(f"Should include distribution from database:")
+            for row in should_include_dist:
+                logging.info(f"  {row['should_include']}: {row['count']}")
 
             return True
 
@@ -342,16 +373,16 @@ class SchemaTypePopulator:
             return False
 
     def reset_schema_types(self):
-        """Reset all schema_type values to NULL (for testing)"""
+        """Reset all schema_type and should_include values to NULL (for testing)"""
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
 
-            cursor.execute("UPDATE eval_data_validation SET schema_type = NULL")
+            cursor.execute("UPDATE eval_data_validation SET schema_type = NULL, should_include = NULL")
             affected_rows = cursor.rowcount
             conn.commit()
 
-            logging.info(f"Reset schema_type for {affected_rows} records")
+            logging.info(f"Reset schema_type and should_include for {affected_rows} records")
 
             cursor.close()
             conn.close()

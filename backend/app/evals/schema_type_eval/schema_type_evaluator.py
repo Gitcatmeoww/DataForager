@@ -14,7 +14,7 @@ from collections import defaultdict
 from tqdm import tqdm
 from dotenv import load_dotenv
 
-from evaluator import Evaluator
+from backend.app.evals.evaluator import Evaluator
 from backend.app.db.connect_db import DatabaseConnection
 
 load_dotenv()
@@ -22,7 +22,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class SchemaTypeEvaluator(Evaluator):
-    def __init__(self, data_split="eval_data_validation", embed_col="example_rows_embed", k=10, limit=None, num_embed=1, use_schema_db=True):
+    def __init__(self, data_split="eval_data_validation", embed_col="example_rows_embed", k=10, limit=None, num_embed=1, use_schema_db=True, filter_should_include=None):
         self.use_schema_db = use_schema_db
 
         # If using schema database, override the database connection
@@ -31,7 +31,7 @@ class SchemaTypeEvaluator(Evaluator):
             os.environ['EVAL_DB_NAME'] = 'HITS-eval-data-corpus-exp-opt-schema'
 
         # Initialize parent class
-        super().__init__(data_split, embed_col, k, limit, num_embed)
+        super().__init__(data_split, embed_col, k, limit, num_embed, filter_should_include)
 
         # Schema type specific attributes
         self.schema_type_data = {}
@@ -51,15 +51,43 @@ class SchemaTypeEvaluator(Evaluator):
         # Initialize schema-specific result files
         self.initialize_schema_results_files()
 
+    def check_column_exists(self, table_name, column_name):
+        """Check if a column exists in a table"""
+        try:
+            with self.db_connection as db:
+                db.cursor.execute("""
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_name = %s AND column_name = %s
+                    )
+                """, (table_name, column_name))
+                result = db.cursor.fetchone()
+                return result['exists'] if result else False
+        except Exception as e:
+            logging.warning(f"Error checking if column exists: {e}")
+            return False
+
     def load_schema_type_data(self):
         """Load schema type information from the database"""
         try:
+            # Check if should_include column exists
+            has_should_include = self.check_column_exists(self.data_split, 'should_include')
+
             with self.db_connection as db:
                 query = f"""
                 SELECT table_name, schema_type
                 FROM {self.data_split}
                 WHERE schema_type IS NOT NULL
                 """
+
+                # Add filter for should_include if specified and column exists
+                if self.filter_should_include is not None and has_should_include:
+                    query += f" AND should_include = '{self.filter_should_include}'"
+                elif self.filter_should_include is not None and not has_should_include:
+                    logging.warning(f"Column 'should_include' does not exist in {self.data_split}, skipping filter")
+
+                logging.info(f"Loading schema type data with query: {query}")
                 db.cursor.execute(query)
                 rows = db.cursor.fetchall()
 
@@ -73,6 +101,8 @@ class SchemaTypeEvaluator(Evaluator):
                 logging.info(f"Loaded schema type data for {len(self.schema_type_data)} tables")
                 logging.info(f"  Normalized: {normalized_count}")
                 logging.info(f"  Denormalized: {denormalized_count}")
+                if self.filter_should_include is not None:
+                    logging.info(f"  Filtered by should_include = '{self.filter_should_include}'")
 
         except Exception as e:
             logging.exception(f"Error loading schema type data: {e}")
@@ -134,10 +164,11 @@ class SchemaTypeEvaluator(Evaluator):
         """Run evaluation separately for each schema type"""
         logging.info("Starting schema type evaluation...")
 
-        # Initialize performance metrics by schema type
+        # Best configuration determined on validation set:
+        # normalized schema generation (relational), N=2, corpus embed = example_2rows_table_name_embed
         methods = [
-            {'name': 'Multi-Component HySE (Relational)', 'function': self.eval_methods.multi_component_hyse_search, 'query_type': 'task', 'schema_approach': 'relational'},
-            # Add other methods as needed
+            # {'name': 'Multi-Component HySE (Relational)', 'function': self.eval_methods.multi_component_hyse_search, 'query_type': 'task', 'schema_approach': 'relational'},
+            {'name': 'Semantic Task Search', 'function': self.eval_methods.semantic_search, 'query_type': 'task'},
         ]
 
         recalls_by_schema = {
@@ -387,12 +418,13 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
     evaluator = SchemaTypeEvaluator(
-        data_split="eval_data_validation",
+        data_split="eval_data_test",
         embed_col="example_2rows_table_name_embed",
-        k=50,
-        # limit=50,
+        k=10,
+        # limit=10,
         num_embed=2,
-        use_schema_db=True
+        use_schema_db=True,
+        filter_should_include=None
     )
 
     # Run schema type analysis

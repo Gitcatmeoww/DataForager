@@ -18,8 +18,8 @@ from pathlib import Path
 current_dir = Path(__file__).parent
 sys.path.append(str(current_dir))
 
-from migrate_database import DatabaseMigrator
-from populate_schema_types import SchemaTypePopulator
+from backend.app.evals.schema_type_eval.migrate_database import DatabaseMigrator
+from backend.app.evals.schema_type_eval.populate_schema_types import SchemaTypePopulator
 from backend.app.db.schema_db_connect import SchemaAwareDatabaseConnection
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -136,7 +136,7 @@ class SchemaEvaluationSetup:
             print("Running sample schema type evaluation...")
 
             # Import and run schema type evaluator
-            from schema_type_evaluator import SchemaTypeEvaluator
+            from backend.app.evals.schema_type_eval.schema_type_evaluator import SchemaTypeEvaluator
 
             evaluator = SchemaTypeEvaluator(
                 data_split="eval_data_validation",

@@ -155,12 +155,12 @@ class DatabaseMigrator:
             return False
 
     def add_schema_type_column(self):
-        """Add schema_type column to eval_data_validation table"""
+        """Add schema_type and should_include columns to eval_data_validation table"""
         try:
             conn = self.get_connection(self.new_db)
             cursor = conn.cursor()
 
-            # Check if column already exists
+            # Check if schema_type column already exists
             cursor.execute("""
                 SELECT column_name
                 FROM information_schema.columns
@@ -168,26 +168,41 @@ class DatabaseMigrator:
                 AND column_name = 'schema_type'
             """)
 
-            if cursor.fetchone():
+            if not cursor.fetchone():
+                # Add schema_type column
+                cursor.execute("""
+                    ALTER TABLE eval_data_validation
+                    ADD COLUMN schema_type VARCHAR(20)
+                """)
+                logging.info("Added schema_type column to eval_data_validation table")
+            else:
                 logging.warning("schema_type column already exists")
-                cursor.close()
-                conn.close()
-                return True
 
-            # Add schema_type column
+            # Check if should_include column already exists
             cursor.execute("""
-                ALTER TABLE eval_data_validation
-                ADD COLUMN schema_type VARCHAR(20)
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = 'eval_data_validation'
+                AND column_name = 'should_include'
             """)
 
+            if not cursor.fetchone():
+                # Add should_include column
+                cursor.execute("""
+                    ALTER TABLE eval_data_validation
+                    ADD COLUMN should_include VARCHAR(1)
+                """)
+                logging.info("Added should_include column to eval_data_validation table")
+            else:
+                logging.warning("should_include column already exists")
+
             conn.commit()
-            logging.info("Added schema_type column to eval_data_validation table")
 
             cursor.close()
             conn.close()
             return True
         except Exception as e:
-            logging.error(f"Error adding schema_type column: {e}")
+            logging.error(f"Error adding columns: {e}")
             return False
 
     def verify_migration(self):
@@ -234,10 +249,23 @@ class DatabaseMigrator:
                 logging.error("schema_type column not found")
                 return False
 
+            # Check should_include column exists
+            cursor.execute("""
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = 'eval_data_validation'
+                AND column_name = 'should_include'
+            """)
+
+            if not cursor.fetchone():
+                logging.error("should_include column not found")
+                return False
+
             logging.info(f"Migration verification successful:")
             logging.info(f"  - All expected tables present: {tables}")
             logging.info(f"  - eval_data_validation rows: {validation_count}")
             logging.info(f"  - schema_type column added successfully")
+            logging.info(f"  - should_include column added successfully")
 
             cursor.close()
             conn.close()
