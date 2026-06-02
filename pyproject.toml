@@ -31,6 +31,9 @@ dependencies = [
     "tiktoken>=0.7",
 ]
 
+[project.scripts]
+dataforager-api = "dataforager.api.app:main"
+
 [project.optional-dependencies]
 # Dependencies needed only to run the evaluation suite (evaluation/).
 eval = [
