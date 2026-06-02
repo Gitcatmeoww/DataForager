@@ -42,3 +42,8 @@ eval/eval_data_processed/eval_data_validation.csv
 
 # Evaluation data exploration
 eval/res_analysis/
+# Local Claude Code settings
+.claude/
+
+# Published HuggingFace dataset CSVs (available on the Hub, too large for git)
+eval/hugging-face/*.csv
