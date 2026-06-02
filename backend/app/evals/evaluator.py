@@ -1,11 +1,12 @@
 import logging
 import os
 import csv
+import random
 from tqdm import tqdm
 from dotenv import load_dotenv
 from backend.app.db.connect_db import DatabaseConnection
 from backend.app.evals.eval_methods import EvalMethods
-from eval_utils import get_ground_truth_header, get_hypo_schema
+from backend.app.evals.eval_utils import get_ground_truth_header, get_hypo_schema
 from backend.app.hyse.hypo_schema_search import cos_sim_search
 
 load_dotenv()
@@ -13,12 +14,13 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class Evaluator:
-    def __init__(self, data_split="eval_data_validation", embed_col="example_rows_embed", k=10, limit=None, num_embed=1):
+    def __init__(self, data_split="eval_data_validation", embed_col="example_rows_embed", k=10, limit=None, num_embed=1, filter_should_include=None):
         self.data_split = data_split
         self.embed_col = embed_col
         self.k = k
         self.limit = limit
         self.num_embed = num_embed
+        self.filter_should_include = filter_should_include  # None, 'Y', or 'N'
         self.eval_methods = EvalMethods(data_split=data_split, embed_col=embed_col, k=k)
         self.db_connection = DatabaseConnection()
         self.ground_truths = []
@@ -32,14 +34,43 @@ class Evaluator:
         self.load_data()
         self.initialize_results_files()
 
-    def load_data(self):
+    def check_column_exists(self, table_name, column_name):
+        """Check if a column exists in a table"""
         try:
             with self.db_connection as db:
+                db.cursor.execute("""
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_name = %s AND column_name = %s
+                    )
+                """, (table_name, column_name))
+                result = db.cursor.fetchone()
+                return result['exists'] if result else False
+        except Exception as e:
+            logging.warning(f"Error checking if column exists: {e}")
+            return False
+
+    def load_data(self):
+        try:
+            # Check if should_include column exists
+            has_should_include = self.check_column_exists(self.data_split, 'should_include')
+
+            with self.db_connection as db:
                 query = f"SELECT table_name, task_queries, keywords, metadata_queries FROM {self.data_split}"
+
+                # Add filter for should_include if specified and column exists
+                if self.filter_should_include is not None and has_should_include:
+                    query += f" WHERE should_include = '{self.filter_should_include}'"
+                elif self.filter_should_include is not None and not has_should_include:
+                    logging.warning(f"Column 'should_include' does not exist in {self.data_split}, skipping filter")
+
                 if self.limit:
-                    query += f" LIMIT {self.limit};"
-                else:
-                    query += ";"
+                    query += f" LIMIT {self.limit}"
+
+                query += ";"
+
+                logging.info(f"Loading data with query: {query}")
                 db.cursor.execute(query)
                 rows = db.cursor.fetchall()
 
@@ -53,6 +84,10 @@ class Evaluator:
                     self.task_queries.append(row['task_queries'])
                     self.keywords.append(row['keywords'])
                     self.metadata_queries.append(row['metadata_queries'])
+
+                logging.info(f"Loaded {len(self.ground_truths)} records from database")
+                if self.filter_should_include is not None:
+                    logging.info(f"  Filtered by should_include = '{self.filter_should_include}'")
         except Exception as e:
             logging.exception(f"Error loading data from the database: {e}")
 
@@ -101,8 +136,8 @@ class Evaluator:
             # {'name': 'HySE Search (Dual_Avg)', 'function': self.eval_methods.single_hyse_search, 'query_type': 'task', 'schema_approach': 'dual_avg'},
             # {'name': 'HySE Dual Seperate Search', 'function': self.eval_methods.single_hyse_dual_separate_search, 'query_type': 'task'},
             {'name': 'Multi-Component HySE (Relational)', 'function': self.eval_methods.multi_component_hyse_search, 'query_type': 'task', 'schema_approach': 'relational'},
-            {'name': 'Multi-Component HySE (Non-Relational)', 'function': self.eval_methods.multi_component_hyse_search, 'query_type': 'task', 'schema_approach': 'non_relational'},
-            {'name': 'Semantic Task Search', 'function': self.eval_methods.semantic_search, 'query_type': 'task'},
+            # {'name': 'Multi-Component HySE (Non-Relational)', 'function': self.eval_methods.multi_component_hyse_search, 'query_type': 'task', 'schema_approach': 'non_relational'},
+            # {'name': 'Semantic Task Search', 'function': self.eval_methods.semantic_search, 'query_type': 'task'},
             # {'name': 'Semantic Keyword Search', 'function': self.eval_methods.semantic_search, 'query_type': 'keyword'},
             # {'name': 'Syntactic Keyword Search', 'function': self.eval_methods.syntactic_search, 'query_type': 'keyword'}
         ]
@@ -242,17 +277,35 @@ class Evaluator:
     def evaluate_multi_stage_retriever(
         self,
         stage1_method="HySE",  # or "Semantic Task", etc.
-        stage2_mode="first",  # "first" or "concat"
-        num_top_tables=50
+        stage2_mode="first",  # "first", "concat", "random", "union", or "best_k"
+        num_top_tables=50,
+        enable_diagnostics=False
     ):
         """
         1. Stage 1: Use 'stage1_method' to retrieve top-N tables for each query
-        2. Stage 2: Use 'metadata' filter, either with just the first metadata query or by concatenating all
+        2. Stage 2: Use 'metadata' filter with one of these modes:
+           - "first": use the first metadata query (single query)
+           - "concat": concatenate all metadata queries into one (AND logic via LLM)
+           - "random": randomly pick one metadata query (single query)
+           - "union": run all metadata queries separately, take union (OR logic - less restrictive)
+           - "best_k": automatically select the metadata query with best discrimination
         3. Compute recall@k for each query, then average
         """
 
         # Initialize results storage
         recall_scores = []
+
+        # Diagnostic metrics
+        if enable_diagnostics:
+            diagnostics = {
+                'ground_truth_in_stage1': 0,
+                'ground_truth_in_stage2': 0,
+                'ground_truth_removed_by_filter': 0,
+                'avg_stage1_size': [],
+                'avg_stage2_size': [],
+                'metadata_filter_empty': 0,
+                'total_queries': 0
+            }
 
         # Iterate over each query and corresponding ground truth
         for idx, ground_truth_table in tqdm(
@@ -267,8 +320,17 @@ class Evaluator:
 
                 for tq_idx, query in enumerate(task_queries):
                     try:
+                        if enable_diagnostics:
+                            diagnostics['total_queries'] += 1
+
                         # Stage 1: Top-N retrieval
                         top_n_tables = self._run_stage1_retrieval(stage1_method, query, num_top_tables)
+
+                        # Track stage 1 diagnostics
+                        if enable_diagnostics:
+                            diagnostics['avg_stage1_size'].append(len(top_n_tables))
+                            if ground_truth_table in top_n_tables:
+                                diagnostics['ground_truth_in_stage1'] += 1
 
                         # Stage 2: Metadata filtering
                         final_candidates = top_n_tables
@@ -292,6 +354,51 @@ class Evaluator:
                                     meta_result = self.eval_methods.metadata_search(concatenated, final_candidates)
                                     meta_set = set(meta_result)
                                     final_candidates = [t for t in final_candidates if t in meta_set]
+
+                            elif stage2_mode == "random":
+                                # Randomly pick one metadata query
+                                if meta_queries_for_this_task:
+                                    meta_query = random.choice(meta_queries_for_this_task)
+                                    meta_result = self.eval_methods.metadata_search(meta_query, final_candidates)
+                                    meta_set = set(meta_result)
+                                    final_candidates = [t for t in final_candidates if t in meta_set]
+
+                            elif stage2_mode == "union":
+                                # Take union of all metadata queries (less restrictive - OR logic)
+                                if meta_queries_for_this_task:
+                                    meta_set = set()
+                                    for meta_query in meta_queries_for_this_task:
+                                        meta_result = self.eval_methods.metadata_search(meta_query, final_candidates)
+                                        meta_set.update(meta_result)
+                                    final_candidates = [t for t in final_candidates if t in meta_set]
+
+                            elif stage2_mode == "best_k":
+                                # Try each metadata query, pick the one that keeps most tables while filtering some
+                                if meta_queries_for_this_task:
+                                    best_result = final_candidates
+                                    best_size = len(final_candidates)
+
+                                    for meta_query in meta_queries_for_this_task:
+                                        meta_result = self.eval_methods.metadata_search(meta_query, final_candidates)
+                                        # Prefer queries that filter but not too aggressively
+                                        if len(meta_result) > 0 and len(meta_result) < best_size:
+                                            best_result = meta_result
+                                            best_size = len(meta_result)
+
+                                    if best_size < len(final_candidates):
+                                        meta_set = set(best_result)
+                                        final_candidates = [t for t in final_candidates if t in meta_set]
+
+                        # Track stage 2 diagnostics
+                        if enable_diagnostics:
+                            diagnostics['avg_stage2_size'].append(len(final_candidates))
+                            if len(final_candidates) == 0:
+                                diagnostics['metadata_filter_empty'] += 1
+                            if ground_truth_table in final_candidates:
+                                diagnostics['ground_truth_in_stage2'] += 1
+                            elif ground_truth_table in top_n_tables:
+                                # Ground truth was in stage 1 but removed by metadata filter
+                                diagnostics['ground_truth_removed_by_filter'] += 1
 
                         # Final top-k
                         final_top_k = final_candidates[: self.k]
@@ -333,80 +440,162 @@ class Evaluator:
             avg_recall = 0
 
         logging.info(f"Average Recall @{self.k} for Multi-Stage: Stage1={stage1_method}, Stage2={stage2_mode} => {avg_recall}")
+
+        # Print diagnostics if enabled
+        if enable_diagnostics:
+            total = diagnostics['total_queries']
+            if total > 0:
+                logging.info(f"\n{'='*60}")
+                logging.info(f"DIAGNOSTIC REPORT: Multi-Stage Retrieval")
+                logging.info(f"{'='*60}")
+                logging.info(f"Total Queries: {total}")
+                logging.info(f"Stage 1 (Top-{num_top_tables}):")
+                logging.info(f"  - Ground truth in Stage 1: {diagnostics['ground_truth_in_stage1']}/{total} ({diagnostics['ground_truth_in_stage1']/total*100:.2f}%)")
+                logging.info(f"  - Avg stage 1 set size: {sum(diagnostics['avg_stage1_size'])/len(diagnostics['avg_stage1_size']):.2f}")
+                logging.info(f"\nStage 2 (Metadata Filtering - {stage2_mode}):")
+                logging.info(f"  - Ground truth in Stage 2: {diagnostics['ground_truth_in_stage2']}/{total} ({diagnostics['ground_truth_in_stage2']/total*100:.2f}%)")
+                logging.info(f"  - Ground truth REMOVED by filter: {diagnostics['ground_truth_removed_by_filter']}/{total} ({diagnostics['ground_truth_removed_by_filter']/total*100:.2f}%)")
+                logging.info(f"  - Empty results after filtering: {diagnostics['metadata_filter_empty']}/{total} ({diagnostics['metadata_filter_empty']/total*100:.2f}%)")
+                logging.info(f"  - Avg stage 2 set size: {sum(diagnostics['avg_stage2_size'])/len(diagnostics['avg_stage2_size']):.2f}")
+                logging.info(f"\nFinal Recall@{self.k}: {avg_recall:.4f}")
+                logging.info(f"{'='*60}\n")
+
+            return avg_recall, diagnostics
+
         return avg_recall
 
-    def evaluate_metadata_refinement(self):
+    def evaluate_metadata_refinement(self, mode="first", search_space=None):
         """
-        Evaluate the effectiveness of flexible metadata fields in narrowing down the table set
+        Evaluate the effectiveness of metadata filtering modes in narrowing down the table set
 
-        - Baseline: Use only the 'tags' metadata field from each sublist, as provided by the Kaggle dataset search filter
-        - Refined: Use a concatenation of all available metadata fields (tags, time granularity, geographical granularity, number of columns, number of rows) within each sublist
-        - Compare the sizes of the resulting table sets from both approaches
+        Args:
+            mode: "first", "concat", "random", "union", or "best_k"
+            search_space: Optional list of table names to restrict search to (default: None = all tables)
+
+        Returns:
+            dict with statistics about set sizes and ground truth coverage
         """
-        baseline_sizes = []
-        refined_sizes = []
+        result_sizes = []
+        ground_truth_in_results = 0
+        empty_results = 0
+        total_sublists = 0
 
+        logging.info(f"Evaluating metadata refinement with mode={mode}")
         logging.info(f"Total ground truths to process: {len(self.ground_truths)}")
 
         for idx, ground_truth_table in tqdm(
             enumerate(self.ground_truths),
             total=len(self.ground_truths),
-            desc="Evaluating Metadata Refinement",
+            desc=f"Evaluating Metadata ({mode})",
             unit="entry"
         ):
             try:
                 meta_sublists = self.metadata_queries[idx]
-                
+
                 if not meta_sublists:
-                    logging.warning(f"Index {idx}: Empty meta_sublists, skipping")
                     continue
 
                 for sublist in meta_sublists:
                     if not sublist:
-                        logging.warning(f"Index {idx}: Empty sublist in meta_sublists, skipping")
                         continue
 
-                    # Baseline: First metadata query ('tags' field)
-                    baseline_query = sublist[0]
-                    baseline_result = self.eval_methods.metadata_search(
-                        metadata_query=baseline_query,
-                        search_space=None
-                    )
-                    baseline_sizes.append(len(baseline_result))
+                    total_sublists += 1
+                    meta_result = []
 
-                    # Refined: Concatenate all metadata fields
-                    refined_query = ". ".join(sublist)
-                    refined_result = self.eval_methods.metadata_search(
-                        metadata_query=refined_query,
-                        search_space=None
-                    )
-                    refined_sizes.append(len(refined_result))
+                    # Baseline: First metadata query ('tags' field)
+                    if mode == "first":
+                        meta_query = sublist[0]
+                        meta_result = self.eval_methods.metadata_search(
+                            metadata_query=meta_query,
+                            search_space=search_space
+                        )
+
+                    # Concatenate all metadata queries
+                    elif mode == "concat":
+                        concatenated = ". ".join(sublist)
+                        meta_result = self.eval_methods.metadata_search(
+                            metadata_query=concatenated,
+                            search_space=search_space
+                        )
+
+                    # Randomly pick one metadata query
+                    elif mode == "random":
+                        meta_query = random.choice(sublist)
+                        meta_result = self.eval_methods.metadata_search(
+                            metadata_query=meta_query,
+                            search_space=search_space
+                        )
+
+                    # Take union of all metadata queries (OR logic)
+                    elif mode == "union":
+                        meta_set = set()
+                        for meta_query in sublist:
+                            result = self.eval_methods.metadata_search(
+                                metadata_query=meta_query,
+                                search_space=search_space
+                            )
+                            meta_set.update(result)
+                        meta_result = list(meta_set)
+
+                    # Select metadata query with best discrimination
+                    elif mode == "best_k":
+                        best_result = []
+                        best_size = float('inf')
+
+                        for meta_query in sublist:
+                            result = self.eval_methods.metadata_search(
+                                metadata_query=meta_query,
+                                search_space=search_space
+                            )
+                            # Prefer queries that return results but not too many
+                            if 0 < len(result) < best_size:
+                                best_result = result
+                                best_size = len(result)
+
+                        meta_result = best_result if best_result else []
+
+                    # Track statistics
+                    result_sizes.append(len(meta_result))
+
+                    if len(meta_result) == 0:
+                        empty_results += 1
+
+                    if ground_truth_table in meta_result:
+                        ground_truth_in_results += 1
 
             except Exception as e:
                 logging.exception(f"Error in evaluate_metadata_refinement at index {idx} (table: {self.ground_truths[idx]}): {e}")
 
-        logging.info(f"Final baseline_sizes: {baseline_sizes}")
-        logging.info(f"Final refined_sizes: {refined_sizes}")
+        # Compute statistics
+        avg_size = sum(result_sizes) / len(result_sizes) if result_sizes else 0
+        ground_truth_coverage = ground_truth_in_results / total_sublists if total_sublists > 0 else 0
+        empty_rate = empty_results / total_sublists if total_sublists > 0 else 0
 
-        # Summaries
-        avg_baseline_size = sum(baseline_sizes) / len(baseline_sizes) if baseline_sizes else 0
-        avg_refined_size  = sum(refined_sizes) / len(refined_sizes) if refined_sizes else 0
-
-        logging.info(f"Metadata Baseline: avg set size = {avg_baseline_size}")
-        logging.info(f"Metadata Refined: avg set size = {avg_refined_size}")
+        logging.info(f"\n{'='*60}")
+        logging.info(f"METADATA REFINEMENT REPORT: mode={mode}")
+        logging.info(f"{'='*60}")
+        logging.info(f"Total metadata sublists: {total_sublists}")
+        logging.info(f"Avg result set size: {avg_size:.2f}")
+        logging.info(f"Ground truth coverage: {ground_truth_in_results}/{total_sublists} ({ground_truth_coverage*100:.2f}%)")
+        logging.info(f"Empty results: {empty_results}/{total_sublists} ({empty_rate*100:.2f}%)")
+        logging.info(f"{'='*60}\n")
 
         return {
-            "avg_baseline_size": avg_baseline_size,
-            "avg_refined_size": avg_refined_size,
-            "baseline_sizes": baseline_sizes,
-            "refined_sizes": refined_sizes
+            "mode": mode,
+            "avg_size": avg_size,
+            "ground_truth_coverage": ground_truth_coverage,
+            "ground_truth_count": ground_truth_in_results,
+            "total_sublists": total_sublists,
+            "empty_results": empty_results,
+            "empty_rate": empty_rate,
+            "result_sizes": result_sizes
         }
 
     # Run the stage 1 method (HySE/Semantic) & returns top-N tables
     def _run_stage1_retrieval(self, stage1_method, query, num_top_tables):
         if stage1_method.lower().startswith("hyse"):
             # e.g. 'HySE Search'
-            results = self.eval_methods.single_hyse_search(query=query, num_embed=self.num_embed, top_k=num_top_tables, schema_approach="non_relational")
+            results = self.eval_methods.multi_component_hyse_search(query=query, num_embed=self.num_embed, top_k=num_top_tables, schema_approach="relational")
         elif stage1_method.lower().startswith("semantic"):
             # e.g. 'Semantic Task Search'
             results = self.eval_methods.semantic_search(query=query, query_type="task", top_k=num_top_tables)
@@ -457,31 +646,59 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
     evaluator = Evaluator(
-        data_split="eval_data_validation",
-        embed_col="example_3rows_table_name_embed",
+        data_split="eval_data_test",
+        embed_col="example_2rows_table_name_embed",
         k=10,
-        # limit=300,
-        num_embed=1
+        # limit=10,
+        num_embed=2,
+        filter_should_include=None  # set to 'Y' to filter semantically meaningful tables, 'N' for non-meaningful, or None for all
     )
 
-    avg_recalls, avg_retrieval_times = evaluator.evaluate()
-    print("Evaluation Results:")
-    for method in avg_recalls:
-        recall = avg_recalls[method]
-        avg_time = avg_retrieval_times.get(method, 0)
-        print(f"{method}: Recall@{evaluator.k} = {recall:.4f}, Avg Time = {avg_time:.4f}s")
+    # avg_recalls, avg_retrieval_times = evaluator.evaluate()
+    # print("Evaluation Results:")
+    # for method in avg_recalls:
+    #     recall = avg_recalls[method]
+    #     avg_time = avg_retrieval_times.get(method, 0)
+    #     print(f"{method}: Recall@{evaluator.k} = {recall:.4f}, Avg Time = {avg_time:.4f}s")
     
     # weight_evaluation_results = evaluator.evaluate_with_weights(weight_step=0.1)
     # for weight_combo, avg_recall in weight_evaluation_results.items():
     #     print(f"{weight_combo}: Average Recall = {avg_recall}")
 
     # Evaluate using Multi-Stage Retrieval
-    # multi_stage_recall = evaluator.evaluate_multi_stage_retriever(
-    #                             stage1_method = "hyse",
-    #                             stage2_mode = "concat",
-    #                             num_top_tables=50
-    #                         )
-    # print(f"Multi-Stage Retrieval: Average Recall = {multi_stage_recall}")
+    # Try different stage2_modes to compare performance
+    # for mode in ["first", "concat", "random", "union", "best_k"]:
+    for mode in ["concat"]:
+        logging.info(f"\n{'='*60}")
+        logging.info(f"Testing stage2_mode={mode}")
+        logging.info(f"{'='*60}")
+        result = evaluator.evaluate_multi_stage_retriever(
+                                    stage1_method = "HySE",  # or "Semantic Task"
+                                    stage2_mode = mode,
+                                    num_top_tables=50,
+                                    enable_diagnostics=True
+                                )
+        if isinstance(result, tuple):
+            multi_stage_recall, diagnostics = result
+            print(f"\n[{mode.upper()}] Final Recall@10 = {multi_stage_recall:.4f}\n")
 
-    # Evaluate metadata refinement
-    # metadata_refine = evaluator.evaluate_metadata_refinement()
+    # Evaluate metadata refinement with different modes
+    # logging.info("\n" + "="*80)
+    # logging.info("COMPARING METADATA REFINEMENT MODES")
+    # logging.info("="*80)
+    
+    # results_summary = []
+    # # for mode in ["first", "concat", "random", "union", "best_k"]:
+    # for mode in ["concat"]:
+    #     result = evaluator.evaluate_metadata_refinement(mode=mode)
+    #     results_summary.append(result)
+    
+    # # Print comparison table
+    # logging.info("\n" + "="*80)
+    # logging.info("METADATA REFINEMENT COMPARISON")
+    # logging.info("="*80)
+    # logging.info(f"{'Mode':<10} {'Avg Size':<12} {'GT Coverage':<15} {'Empty Rate':<12}")
+    # logging.info("-"*80)
+    # for r in results_summary:
+    #     logging.info(f"{r['mode']:<10} {r['avg_size']:<12.2f} {r['ground_truth_coverage']*100:<14.2f}% {r['empty_rate']*100:<11.2f}%")
+    # logging.info("="*80)

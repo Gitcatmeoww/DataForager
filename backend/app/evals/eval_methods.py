@@ -4,10 +4,10 @@ import time
 import logging
 from copy import deepcopy
 from dotenv import load_dotenv
-# from backend.app.evals.elastic_search.es_client import es_client
+from backend.app.evals.elastic_search.es_client import es_client
 from backend.app.hyse.hypo_schema_search import hyse_search
 from backend.app.actions.infer_action import infer_mentioned_metadata_fields, text_to_sql, execute_sql, TextToSQL, SQLClause
-from eval_utils import generate_embeddings, average_embeddings, average_embeddings_with_weights, get_query_embedding_from_db, get_keyword_embedding_from_db, save_query_embedding_to_db, save_keyword_embedding_to_db, retrieve_or_generate_schemas, get_cached_metadata_sqlclauses, save_cached_metadata_sqlclauses, llm_rerank_tables, retrieve_or_generate_hyse_components
+from backend.app.evals.eval_utils import generate_embeddings, average_embeddings, average_embeddings_with_weights, get_query_embedding_from_db, get_keyword_embedding_from_db, save_query_embedding_to_db, save_keyword_embedding_to_db, retrieve_or_generate_schemas, get_cached_metadata_sqlclauses, save_cached_metadata_sqlclauses, llm_rerank_tables, retrieve_or_generate_hyse_components
 
 load_dotenv()
 
@@ -19,7 +19,7 @@ openai_client = OpenAIClient()
 class EvalMethods:
     def __init__(self, data_split, embed_col, k):
         self.openai_client = openai_client
-        # self.es_client = es_client.client
+        self.es_client = es_client.client
         self.data_split = data_split
         self.embed_col = embed_col
         self.k = k
