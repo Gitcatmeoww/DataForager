@@ -1,6 +1,5 @@
 from dotenv import load_dotenv
 import os
-from openai import OpenAI
 from openai import AzureOpenAI
 import instructor
 
@@ -8,16 +7,23 @@ load_dotenv()
 
 class OpenAIClient:
     def __init__(self):
-        # self.client = OpenAI(api_key=os.environ['OPENAI_API_KEY'])
-        # self.text_generation_model_default = "gpt-4o-mini"
-        # self.embedding_model_default = "text-embedding-3-small"
-        self.client = AzureOpenAI(
-            azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT"), 
-            api_key=os.getenv("AZURE_OPENAI_API_KEY"),  
-            api_version="2024-10-01-preview"
-        ) 
+        # The underlying Azure OpenAI client is created lazily on first use (see
+        # the `client` property) so that importing modules which hold a
+        # module-level OpenAIClient() does not require credentials to be set.
+        self._client = None
         self.text_generation_model_default = "gpt-4o-mini"
         self.embedding_model_default = "text-embedding-3-small"
+
+    @property
+    def client(self):
+        """The Azure OpenAI client, instantiated on first access."""
+        if self._client is None:
+            self._client = AzureOpenAI(
+                azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+                api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+                api_version="2024-10-01-preview",
+            )
+        return self._client
 
     def infer_metadata(self, messages, response_model, model=None, temperature=0.1):
         if model is None:
