@@ -36,7 +36,7 @@ Ensure you have:
 Run the setup script to automatically configure everything:
 
 ```bash
-cd backend/app/evals/schema_type_eval
+cd evaluation/schema_type_eval
 python setup_schema_evaluation.py
 ```
 
