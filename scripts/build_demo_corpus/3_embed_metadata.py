@@ -1,6 +1,6 @@
 import json
 from tqdm import tqdm
-from .openai_client import OpenAIClient
+from dataforager.table_representation.openai_client import OpenAIClient
 
 # Initialize OpenAI client
 openai_client = OpenAIClient()

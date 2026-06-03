@@ -10,7 +10,7 @@
 
 import json
 from tqdm import tqdm
-from .openai_client import OpenAIClient
+from dataforager.table_representation.openai_client import OpenAIClient
 from dataforager.utils import format_prompt
 from pydantic import BaseModel
 
