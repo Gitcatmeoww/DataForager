@@ -12,14 +12,7 @@ Usage:
 """
 
 import os
-import sys
 import logging
-from pathlib import Path
-
-# Add backend to path
-current_dir = Path(__file__).parent
-backend_dir = current_dir.parent.parent.parent
-sys.path.insert(0, str(backend_dir))
 
 from evaluation.schema_type_eval.migrate_database import DatabaseMigrator
 from evaluation.schema_type_eval.populate_schema_types import SchemaTypePopulator

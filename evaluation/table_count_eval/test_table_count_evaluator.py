@@ -6,10 +6,6 @@ before launching a full evaluation.
 """
 
 import logging
-import sys
-import os
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../..'))
 
 from evaluation.table_count_eval.table_count_evaluator import TableCountEvaluator
 

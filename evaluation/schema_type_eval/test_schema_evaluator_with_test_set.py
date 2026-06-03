@@ -3,11 +3,6 @@ Test script to verify SchemaTypeEvaluator works with eval_data_test.
 """
 
 import logging
-import sys
-import os
-
-# Add project root to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../..'))
 
 from evaluation.schema_type_eval.schema_type_evaluator import SchemaTypeEvaluator
 

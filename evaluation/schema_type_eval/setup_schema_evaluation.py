@@ -9,14 +9,8 @@ This script helps users set up and run the complete schema type evaluation pipel
 """
 
 import os
-import sys
 import subprocess
 import logging
-from pathlib import Path
-
-# Add current directory to path for imports
-current_dir = Path(__file__).parent
-sys.path.append(str(current_dir))
 
 from evaluation.schema_type_eval.migrate_database import DatabaseMigrator
 from evaluation.schema_type_eval.populate_schema_types import SchemaTypePopulator
