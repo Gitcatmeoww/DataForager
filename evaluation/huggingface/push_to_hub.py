@@ -1,7 +1,7 @@
 from huggingface_hub import HfApi
 
 REPO_ID = "trl-lab/kaggleds-corpus-task-based-search-bench"
-BASE = "eval/hugging-face"
+BASE = "evaluation/huggingface"
 
 splits = {
     "train":      f"{BASE}/eval_data_train.csv",
