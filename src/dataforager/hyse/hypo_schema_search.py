@@ -258,8 +258,8 @@ def hyse_search(initial_query, search_space=None, num_schema=1, k=10, table_name
     num_left = num_schema
 
     # Step 1: Single HySE search
-    # Step 1.1: Infer a single denormalized hypothetical schema
-    single_hypo_schema_json = infer_single_hypothetical_schema(initial_query).json()
+    # Step 1.1: Infer a single relational (normalized) hypothetical schema
+    single_hypo_schema_json = infer_single_hypothetical_schema(initial_query, PROMPT_SINGLE_SCHEMA_RELATIONAL).json()
     logging.info(f"Single hypothetical schema JSON: {single_hypo_schema_json}")
 
     # Step 1.2: Generate embedding for the single hypothetical schema
