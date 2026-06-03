@@ -53,5 +53,8 @@ dev = [
 where = ["src"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "evaluation"]
+# Only the unit tests under tests/ run with a bare `pytest`. The test_*.py
+# scripts under evaluation/ are infra-dependent smoke checks (need Postgres /
+# Elasticsearch) and are meant to be run manually.
+testpaths = ["tests"]
 python_files = ["test_*.py"]
