@@ -54,4 +54,4 @@ eval/
 .claude/
 
 # Published HuggingFace dataset CSVs (available on the Hub, too large for git)
-eval/hugging-face/*.csv
+evaluation/huggingface/*.csv
