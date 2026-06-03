@@ -17,29 +17,34 @@ class SingletonMeta(type):
 # Implement ElasticSearchClient as a Singleton
 class ElasticSearchClient(metaclass=SingletonMeta):
     def __init__(self):
-        # Decide which mode to use based on an environment variable ES_MODE
-        es_mode = os.getenv("ES_MODE", "local").lower()
-        
-        if es_mode == "azure":
-            azure_es_endpoint = os.environ["AZURE_ES_ENDPOINT"]
-            azure_es_api_key  = os.environ["AZURE_ES_API_KEY"]
+        # Only read configuration here. The actual connection is established
+        # lazily on first access of `client` (see below), so importing this
+        # module does not require a running Elasticsearch instance.
+        self.es_mode = os.getenv("ES_MODE", "local").lower()
+        self._client = None
 
+    def _connect(self):
+        if self.es_mode == "azure":
             logging.info("Using Azure Elasticsearch deployment.")
-
-            self.client = Elasticsearch(
-                azure_es_endpoint,
-                api_key=azure_es_api_key
+            return Elasticsearch(
+                os.environ["AZURE_ES_ENDPOINT"],
+                api_key=os.environ["AZURE_ES_API_KEY"],
             )
-        else:
-            # Default: local mode
-            logging.info("Using local Elasticsearch deployment.")
-            self.client = Elasticsearch("http://localhost:9200", verify_certs=False)
+        # Default: local mode
+        logging.info("Using local Elasticsearch deployment.")
+        return Elasticsearch("http://localhost:9200", verify_certs=False)
 
-        self.test_connection()
+    @property
+    def client(self):
+        """The Elasticsearch client, created and health-checked on first use."""
+        if self._client is None:
+            self._client = self._connect()
+            self.test_connection()
+        return self._client
 
     def test_connection(self):
         try:
-            health = self.client.cluster.health()
+            health = self._client.cluster.health()
             logging.info(f"Elasticsearch Cluster Health: {health['status']}")
         except Exception as e:
             logging.error(f"Error connecting to Elasticsearch: {e}")
