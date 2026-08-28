@@ -15,10 +15,11 @@ on four points that are easy to get silently wrong:
 """
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import torch
 import torch.nn as nn
-from transformers import TapasConfig, TapasModel
+from transformers import TapasConfig, TapasModel, TapasTokenizer
 
 PROJECTION_DIM = 256
 
@@ -84,3 +85,37 @@ class TapasDualEncoder(nn.Module):
         return DualEncoderOutput(
             query_embeddings=h_q, table_embeddings=h_t, logits=logits, loss=loss
         )
+
+
+def load_dual_encoder(checkpoint_dir, device=None):
+    """Load a converted checkpoint and its tokenizer.
+
+    Args:
+        checkpoint_dir: Directory holding pytorch_model.pt and vocab.txt.
+        device: Optional torch device to move the model to.
+
+    Returns:
+        A (model, tokenizer) pair, with the model in eval mode.
+    """
+    checkpoint_dir = Path(checkpoint_dir)
+    blob = torch.load(checkpoint_dir / "pytorch_model.pt", weights_only=False)
+
+    model = TapasDualEncoder(TapasConfig(**blob["config"]), projection_dim=blob["projection_dim"])
+    model.load_state_dict(blob["state_dict"], strict=True)
+    model.eval()
+    if device is not None:
+        model.to(device)
+
+    tokenizer = TapasTokenizer(vocab_file=str(checkpoint_dir / "vocab.txt"))
+    return model, tokenizer
+
+
+def resolve_device(name=None) -> torch.device:
+    """Pick a device, preferring MPS then CUDA then CPU."""
+    if name:
+        return torch.device(name)
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")

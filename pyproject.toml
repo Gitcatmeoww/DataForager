@@ -60,6 +60,9 @@ dev = [
 where = ["src"]
 
 [tool.pytest.ini_options]
+# Import the library straight from src/ so the suite does not depend on the
+# editable install being in working order.
+pythonpath = ["src", "."]
 # Only the unit tests under tests/ run with a bare `pytest`. The test_*.py
 # scripts under evaluation/ are infra-dependent smoke checks (need Postgres /
 # Elasticsearch) and are meant to be run manually.

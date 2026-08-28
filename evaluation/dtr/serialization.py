@@ -96,6 +96,69 @@ def parse_markdown_table(markdown: str, max_rows: int | None = None) -> pd.DataF
     return pd.DataFrame(rows, columns=columns, dtype=str)
 
 
+def _encode_one_table(tokenizer, title, table, max_length):
+    """Encode a single table, narrowing it until it fits the length budget.
+
+    The tokenizer's drop_rows_to_fit only sheds rows, which is not enough here:
+    wide corpus tables can blow the budget on the header alone. The original
+    trims whichever of columns or rows is larger and retries, so columns are
+    dropped as well. Rows are already capped at two by the adapter, so in
+    practice this narrows columns.
+
+    Args:
+        tokenizer: A TapasTokenizer.
+        title: Text placed in the query slot.
+        table: The table to encode.
+        max_length: Sequence length cap.
+
+    Returns:
+        The tokenizer's batch encoding for this table.
+    """
+    if table.empty:
+        table = pd.DataFrame({"col_0": [""]})
+
+    def attempt(frame, text):
+        return tokenizer(
+            table=frame,
+            queries=[text],
+            padding="max_length",
+            truncation="drop_rows_to_fit",
+            max_length=max_length,
+            return_tensors="pt",
+        )
+
+    # Every surviving column costs at least one token, so nothing beyond
+    # max_length columns can possibly fit. Slicing first bounds the work on the
+    # corpus's very wide tables, which reach 3000 columns.
+    if table.shape[1] > max_length:
+        table = table.iloc[:, :max_length]
+
+    # Measure each column, then keep the longest prefix that fits, rather than
+    # dropping one column at a time and re-tokenizing after each.
+    budget = max_length - len(tokenizer.tokenize(title)) - 2  # [CLS] and [SEP]
+    keep, used = 0, 0
+    for column in table.columns:
+        cost = len(tokenizer.tokenize(str(column)))
+        cost += sum(len(tokenizer.tokenize(str(cell))) for cell in table[column])
+        if used + cost > budget:
+            break
+        used += cost
+        keep += 1
+    table = table.iloc[:, : max(1, keep)]
+
+    # The estimate ignores a few tokenizer details, so keep a bounded retry.
+    while True:
+        try:
+            return attempt(table, title)
+        except ValueError:
+            if table.shape[1] > 1:
+                table = table.iloc[:, :-1]
+            elif len(title.split()) > 1:
+                title = " ".join(title.split()[:-1])
+            else:
+                return attempt(pd.DataFrame({"col_0": [""]}), "")
+
+
 def encode_tables(tokenizer, titles, tables, max_length=DEFAULT_MAX_TABLE_LENGTH):
     """Encode (title, table) pairs for the table tower.
 
@@ -109,14 +172,7 @@ def encode_tables(tokenizer, titles, tables, max_length=DEFAULT_MAX_TABLE_LENGTH
         A dict of batched tensors ready to splat into TapasDualEncoder.encode_tables.
     """
     encoded = [
-        tokenizer(
-            table=table if not table.empty else pd.DataFrame({"col_0": [""]}),
-            queries=[title or ""],
-            padding="max_length",
-            truncation="drop_rows_to_fit",
-            max_length=max_length,
-            return_tensors="pt",
-        )
+        _encode_one_table(tokenizer, title or "", table, max_length)
         for title, table in zip(titles, tables)
     ]
     return {
