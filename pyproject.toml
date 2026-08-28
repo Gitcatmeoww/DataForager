@@ -44,6 +44,13 @@ eval = [
     "huggingface-hub>=0.23",
     "datasets>=2.19",
 ]
+# The DTR retrieval baseline (evaluation/dtr/). TensorFlow is deliberately not
+# listed: it is needed only to read the released TF checkpoints, in a throwaway
+# environment, and no longer ships wheels for this project's Python version.
+dtr = [
+    "torch>=2.2",
+    "transformers>=4.40",
+]
 # Development / testing tooling.
 dev = [
     "pytest>=8.0",

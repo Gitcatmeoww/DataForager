@@ -55,3 +55,7 @@ eval/
 
 # Published HuggingFace dataset CSVs (available on the Hub, too large for git)
 evaluation/huggingface/*.csv
+
+# DTR baseline: downloaded TAPAS checkpoints, converted weights, training runs
+evaluation/dtr/checkpoints/
+evaluation/dtr/runs/
