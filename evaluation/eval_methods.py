@@ -17,12 +17,17 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 openai_client = OpenAIClient()
 
 class EvalMethods:
-    def __init__(self, data_split, embed_col, k):
+    def __init__(self, data_split, embed_col, k, dtr_model_dir=None, dtr_index_path=None):
         self.openai_client = openai_client
         self.es_client = es_client.client
         self.data_split = data_split
         self.embed_col = embed_col
         self.k = k
+        # Optional DTR baseline. Loaded lazily so the rest of the harness keeps
+        # working without torch or a converted checkpoint installed.
+        self.dtr_model_dir = dtr_model_dir
+        self.dtr_index_path = dtr_index_path
+        self._dtr = None
 
     # Evaluate semantic keywords search & semantic task search against HySE  
     def semantic_search(self, query, query_type="task", top_k=None):
@@ -508,6 +513,62 @@ class EvalMethods:
 
         except Exception as e:
             logging.exception(f"[MetaSearch-Error] {e}")
+            return []
+
+
+    def _load_dtr(self):
+        """Load the DTR model, tokenizer, and prebuilt index once."""
+        if self._dtr is None:
+            if not self.dtr_model_dir:
+                raise ValueError("dtr_model_dir was not set on EvalMethods")
+
+            from evaluation.dtr.index import DTRIndex
+            from evaluation.dtr.modeling import load_dual_encoder, resolve_device
+
+            device = resolve_device()
+            model, tokenizer = load_dual_encoder(self.dtr_model_dir, device=device)
+            # The index is built by evaluate_dtr; reusing it keeps this method
+            # cheap enough to call once per query.
+            index = DTRIndex.load(self.dtr_index_path)
+            self._dtr = (model, tokenizer, index, device)
+        return self._dtr
+
+    def dtr_search(self, query, query_type=None, top_k=None):
+        """Retrieve with the fine-tuned dense table retriever."""
+        try:
+            top_k = top_k or self.k
+            model, tokenizer, index, device = self._load_dtr()
+
+            from evaluation.dtr.index import encode_query_batch
+
+            embedding = encode_query_batch(model, tokenizer, [query], device)
+            ranking = index.search(embedding, top_k=top_k)[0]
+            return [index.recall_keys[position] for position in ranking]
+        except Exception as e:
+            logging.error(f"Error during DTR search: {e}")
+            return []
+
+    def hyse_over_dtr_search(self, query, query_type=None, top_k=None, num_schemas=2,
+                             fusion_lambda=0.5):
+        """Retrieve with HySE hypothetical schemas encoded by the DTR table tower."""
+        try:
+            top_k = top_k or self.k
+            model, tokenizer, index, device = self._load_dtr()
+
+            from evaluation.dtr.hyse_over_dtr import encode_schemas, fetch_cached_schemas
+            from evaluation.dtr.index import encode_query_batch
+
+            embedding = encode_query_batch(model, tokenizer, [query], device)
+            schemas = fetch_cached_schemas([query], num_schemas=num_schemas)
+            schema_embedding = encode_schemas(model, tokenizer, schemas, [query], device)
+
+            if abs(schema_embedding).sum() > 0:
+                embedding = (1 - fusion_lambda) * embedding + fusion_lambda * schema_embedding
+
+            ranking = index.search(embedding.astype("float32"), top_k=top_k)[0]
+            return [index.recall_keys[position] for position in ranking]
+        except Exception as e:
+            logging.error(f"Error during HySE-over-DTR search: {e}")
             return []
 
 
