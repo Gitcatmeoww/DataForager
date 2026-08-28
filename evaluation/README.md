@@ -18,6 +18,8 @@ The harness compares several retrieval methods over the same corpus and reports
 | `single_hyse_search` | HySE with a single hypothetical schema |
 | `multi_component_hyse_search` / `multi_hyse_search` | HySE with multiple hypothetical schemas |
 | `metadata_search` | NL metadata-filter retrieval (granularity, size, …) |
+| `dtr_search` | Fine-tuned dense table retriever (DTR) — the learned baseline, see [`dtr/`](dtr/) |
+| `hyse_over_dtr_search` | HySE hypothetical schemas encoded by DTR's table tower |
 
 [`evaluator.py`](evaluator.py) orchestrates these over a data split and also
 supports weighted fusion, multi-stage retrieval, and metadata-refinement
@@ -64,6 +66,14 @@ Key knobs (set in that script, or when constructing `Evaluator` directly):
 
 Results are written to `evaluation/results/` (gitignored): `per_row_results.csv`,
 `failed_rows.csv`, `failed_queries.csv`, and average recalls/times are printed.
+
+## The DTR baseline
+
+[`dtr/`](dtr/) holds a re-implementation of the dense table retriever from
+Herzig et al. (2021), fine-tuned on the KaggleDS train split. It is the one
+baseline that learns from the corpus rather than using frozen embeddings, and it
+has its own README covering the pipeline, results, and deviations. It needs the
+optional `dtr` extra (`pip install -e ".[dtr]"`) and no database.
 
 ## Subgroup experiments
 

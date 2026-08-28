@@ -227,6 +227,12 @@ def train(checkpoint, output_dir, csv_dir=None, train_split="train", val_split="
                 history.append({"step": step, "loss": float(loss), "val_recall@10": recall})
                 print(f"  step {step}: loss={float(loss):.4f} val R@10={recall:.4f}")
 
+                # Written every evaluation. metrics.json only records the best
+                # checkpoint, so on its own it truncates the curve at the last
+                # improvement.
+                Path(output_dir).mkdir(parents=True, exist_ok=True)
+                (Path(output_dir) / "history.json").write_text(json.dumps(history, indent=2))
+
                 if recall > best_recall:
                     best_recall = recall
                     save_run(model, output_dir, checkpoint,
