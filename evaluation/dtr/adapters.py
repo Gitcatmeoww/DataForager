@@ -49,10 +49,18 @@ class TableRecord:
 
 @dataclass(frozen=True)
 class RetrievalExample:
-    """One (query, gold table) training or evaluation pair."""
+    """One (query, gold table) training or evaluation pair.
+
+    A question with several gold tables is several examples, which is what
+    training wants. Evaluation instead has to score such a question once,
+    counting a hit if any of its gold tables is retrieved, so examples from one
+    question share a query_id. KaggleDS has one gold per query and leaves it
+    None; NQ-Tables sets it, since a handful of its questions carry two.
+    """
 
     query: str
     table_id: str
+    query_id: str | None = None
 
 
 class CorpusAdapter(Protocol):

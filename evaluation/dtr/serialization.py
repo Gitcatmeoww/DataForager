@@ -33,6 +33,33 @@ DEFAULT_MAX_QUERY_LENGTH = 128
 NUM_TOKEN_TYPES = 7
 
 
+def normalize_columns(names) -> list[str]:
+    """Make column names unique and non-empty, as the tokenizer requires.
+
+    TAPAS indexes columns by name, so blanks and duplicates break encoding. Both
+    are common: NQ tables leave 61% of headers with at least one blank cell, and
+    Kaggle markdown repeats names freely.
+
+    Args:
+        names: Raw column names, in order.
+
+    Returns:
+        Names in the same order, blanks filled as col_<position> and repeats
+        suffixed.
+    """
+    columns, seen = [], {}
+    for i, name in enumerate(names):
+        name = str(name).strip() if name is not None else ""
+        name = name or f"col_{i}"
+        if name in seen:
+            seen[name] += 1
+            name = f"{name}_{seen[name]}"
+        else:
+            seen[name] = 0
+        columns.append(name)
+    return columns
+
+
 def parse_markdown_table(markdown: str, max_rows: int | None = None) -> pd.DataFrame:
     """Parse a markdown table into a DataFrame of strings.
 
@@ -74,18 +101,7 @@ def parse_markdown_table(markdown: str, max_rows: int | None = None) -> pd.DataF
     if max_rows is not None:
         body = body[:max_rows]
 
-    # The tokenizer indexes columns by name, so names must be unique and
-    # non-empty.
-    columns, seen = [], {}
-    for i, name in enumerate(header):
-        name = name or f"col_{i}"
-        if name in seen:
-            seen[name] += 1
-            name = f"{name}_{seen[name]}"
-        else:
-            seen[name] = 0
-        columns.append(name)
-
+    columns = normalize_columns(header)
     width = len(columns)
     rows = []
     for line in body:

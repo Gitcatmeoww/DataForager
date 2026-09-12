@@ -1,6 +1,6 @@
 """Unit tests for the DTR markdown parser (pure logic, no model / network)."""
 
-from evaluation.dtr.serialization import parse_markdown_table
+from evaluation.dtr.serialization import normalize_columns, parse_markdown_table
 
 SIMPLE = """| date | value |
 | --- | --- |
@@ -67,3 +67,14 @@ def test_cells_keep_inner_whitespace_but_are_stripped():
     frame = parse_markdown_table("| a |\n| --- |\n|   hello world   |")
 
     assert frame.iloc[0]["a"] == "hello world"
+
+
+def test_normalize_columns_fills_blanks_and_dedupes():
+    # Both cases occur: NQ headers leave blanks, Kaggle markdown repeats names.
+    assert normalize_columns(["", "Born", "Born", None]) == [
+        "col_0", "Born", "Born_1", "col_3",
+    ]
+
+
+def test_normalize_columns_preserves_order_and_strips():
+    assert normalize_columns(["  a  ", "b"]) == ["a", "b"]

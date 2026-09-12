@@ -8,7 +8,7 @@ import pytest
 torch = pytest.importorskip("torch", reason="DTR needs the optional dtr extra")
 
 from evaluation.dtr.adapters import RetrievalExample, TableRecord
-from evaluation.dtr.evaluate_dtr import recall_at_k
+from evaluation.dtr.evaluate_dtr import build_adapter, group_by_question, recall_at_k
 from evaluation.dtr.index import DTRIndex
 from evaluation.dtr.train import group_aware_batches
 
@@ -67,6 +67,96 @@ def test_recall_matches_duplicate_table_names():
     ranking = np.array([[2, 0, 1]])
 
     assert recall_at_k(index, ranking, ["train.csv"], ks=(1,))[1] == 1.0
+
+
+def test_recall_accepts_a_gold_set_for_multi_gold_questions():
+    # NQ-Tables labels a few questions with two gold tables; either counts.
+    index = make_index(["a", "b", "c", "d"])
+    ranking = np.array([[2, 3, 0, 1]])
+
+    recalls = recall_at_k(index, ranking, [{"a", "c"}], ks=(1, 4))
+
+    assert recalls[1] == 1.0  # "c" is first
+    assert recalls[4] == 1.0
+
+
+def test_recall_misses_when_no_gold_in_the_set_is_retrieved():
+    index = make_index(["a", "b", "c", "d"])
+    ranking = np.array([[0, 1]])
+
+    assert recall_at_k(index, ranking, [{"c", "d"}], ks=(2,))[2] == 0.0
+
+
+@pytest.mark.parametrize("ranking_row", [[3, 2, 1, 0], [0, 1, 2, 3], [1, 3, 0, 2]])
+def test_a_bare_key_and_a_one_element_set_agree(ranking_row):
+    """The single-gold path must be unchanged, since it produced Table 1."""
+    index = make_index(["a", "b", "c", "d"])
+    ranking = np.array([ranking_row])
+    ks = (1, 2, 4)
+
+    assert recall_at_k(index, ranking, ["a"], ks=ks) == recall_at_k(
+        index, ranking, [{"a"}], ks=ks
+    )
+
+
+def test_recall_handles_mixed_bare_and_set_golds():
+    index = make_index(["a", "b"])
+    ranking = np.array([[0, 1], [1, 0]])
+
+    assert recall_at_k(index, ranking, ["a", {"a", "b"}], ks=(1,))[1] == 1.0
+
+
+# --- group_by_question ----------------------------------------------------
+
+def test_examples_without_a_query_id_stay_separate():
+    # KaggleDS has one gold per query and sets no query_id.
+    examples = [
+        RetrievalExample(query="q", table_id="t1"),
+        RetrievalExample(query="q", table_id="t2"),
+    ]
+    queries, golds = group_by_question(examples)
+
+    assert queries == ["q", "q"]
+    assert golds == [["t1"], ["t2"]]
+
+
+def test_examples_sharing_a_query_id_collapse():
+    examples = [
+        RetrievalExample(query="heroes", table_id="t1", query_id="q1"),
+        RetrievalExample(query="heroes", table_id="t2", query_id="q1"),
+    ]
+    queries, golds = group_by_question(examples)
+
+    assert queries == ["heroes"]
+    assert golds == [["t1", "t2"]]
+
+
+def test_grouping_preserves_first_seen_order_when_interleaved():
+    examples = [
+        RetrievalExample(query="a", table_id="t1", query_id="qa"),
+        RetrievalExample(query="b", table_id="t2", query_id="qb"),
+        RetrievalExample(query="a", table_id="t3", query_id="qa"),
+    ]
+    queries, golds = group_by_question(examples)
+
+    assert queries == ["a", "b"]
+    assert golds == [["t1", "t3"], ["t2"]]
+
+
+# --- build_adapter --------------------------------------------------------
+
+def test_build_adapter_returns_the_kaggleds_corpus():
+    assert build_adapter("kaggleds").name == "kaggleds"
+
+
+def test_build_adapter_requires_a_data_dir_for_nq():
+    with pytest.raises(ValueError, match="--data-dir is required"):
+        build_adapter("nq")
+
+
+def test_build_adapter_rejects_an_unknown_corpus():
+    with pytest.raises(ValueError, match="unknown corpus"):
+        build_adapter("wikitables")
 
 
 def table(table_id, group):

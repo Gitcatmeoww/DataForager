@@ -80,6 +80,81 @@ The committed `data/openti_title_map.parquet` (677 KB) is that output, so the
 corpus is reproducible without re-downloading IBM's 860 MB
 `corpus_structure.jsonl`.
 
+## The adapter
+
+`NQTablesAdapter` implements the same `CorpusAdapter` protocol as
+`KaggleDSAdapter`, so the DTR index, the evaluator, and the HySE fusion read
+this corpus the way they read KaggleDS.
+
+```python
+from evaluation.nq.adapters import NQTablesAdapter
+
+tables, examples = NQTablesAdapter(data_dir).load("test")
+# 8,205 TableRecords, 966 RetrievalExamples over 959 questions
+```
+
+Loading all 8,205 tables takes about 14 seconds and is cached on the adapter,
+so a second `load` for another split re-reads nothing.
+
+Three choices differ from KaggleDS and change how results read:
+
+| | KaggleDS | NQ-Tables |
+| --- | --- | --- |
+| corpus scope | per split | **one corpus, all splits** |
+| `recall_key` | `table_name` | the did, a content hash |
+| `group_id` | `database_name` | the did minus its hash, i.e. the Wikipedia page |
+
+**The corpus is not split-scoped.** NQ-Tables has one 8,205-table corpus that
+every split retrieves against; only the questions are split-scoped. Narrowing
+test to its own 896 gold tables would shrink the haystack ninefold and inflate
+recall.
+
+**Recall is scored on the did.** It is a content hash, so unlike KaggleDS's
+`table_name` it cannot collide across unrelated tables — the C3 problem does not
+arise here.
+
+**Groups are Wikipedia pages.** 1,698 of the 8,205 tables share a page with
+another table, in groups of up to 12. Tables from one page can answer the same
+question, so they must never be opposed as negatives, which is the same role
+`database_name` plays for KaggleDS.
+
+### Running it
+
+```bash
+python -m evaluation.dtr.evaluate_dtr \
+    --checkpoint evaluation/dtr/checkpoints/tapas_nq_hn_retriever_medium \
+    --corpus nq --data-dir <openti release> --split test \
+    --index-path evaluation/dtr/runs/nq_test_index_medium.npz
+```
+
+DTR needs no fine-tuning here: the released `tapas_nq_hn_retriever_*`
+checkpoints are already trained on NQ train, so this is inference only.
+
+| DTR `medium` +hn | R@1 | R@10 | R@50 |
+| --- | --- | --- | --- |
+| here, 8,205 tables | .553 | .852 | .923 |
+| Herzig et al., 169,898 tables | .449 | .798 | .911 |
+
+The two rows are not comparable and the second is listed only as a sanity
+check. Ours is higher because the corpus is 20.7x smaller, and the gap narrows
+as k grows (+10.4, +5.4, +1.2 pp), which is what removing distractors looks
+like.
+
+### Multi-gold questions
+
+A few questions carry two gold tables: 7 of 966 in test, 60 in train, 1 in dev.
+OpenTI stores one instance per (question, gold table) pair, which is why its
+11,628 instances match IBM's 11,628 qrel rows exactly.
+
+The adapter emits one `RetrievalExample` per pair, which is what training wants,
+and tags examples from one question with a shared `query_id`. `evaluate_dtr`
+groups on it via `group_by_question` and counts a hit when *any* of a question's
+gold tables is retrieved, which is why test reports 959 queries rather than 966.
+
+`recall_at_k` accepts either a bare gold key or a set of them. The bare form is
+untouched, and the KaggleDS numbers behind Table 1 were re-derived through the
+changed code and are bitwise identical at every cutoff (R@10 0.57466837826273).
+
 ## Two defects in the upstream releases
 
 Both cost real debugging time; both are worth knowing before touching these
