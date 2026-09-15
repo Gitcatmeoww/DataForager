@@ -25,6 +25,7 @@ import pandas as pd
 
 from evaluation.dtr.adapters import DEFAULT_MAX_ROWS, RetrievalExample, TableRecord
 from evaluation.dtr.serialization import normalize_columns
+from evaluation.nq.build_title_map import title_from_corpus_row, unquote_did
 
 # Built by evaluation/nq/build_title_map.py and committed, so the corpus loads
 # without re-downloading IBM's 860 MB corpus_structure.jsonl.
@@ -166,3 +167,103 @@ class NQTablesAdapter:
                 "train, dev/validation, test"
             )
         return tables, examples
+
+
+class NQTablesFullAdapter:
+    """The full 169,898-table NQ-Tables corpus, read from the IBM release.
+
+    The gold-only corpus that NQTablesAdapter serves turned out to be too easy
+    to measure on: a frozen encoder reaches .981 R@10 there, because NQ
+    questions name an entity and the gold table's page title names the same
+    entity, and 95% of the distractors that would compete on title are absent.
+    This adapter restores them.
+
+    It needs no OpenTI data at all. Tables come from corpus_structure.jsonl,
+    questions from {split}_queries.jsonl, and labels from {split}_qrels.jsonl,
+    so the did is both the table id and the recall key.
+
+    Iterating is the supported way to read the corpus. Materializing 169,898
+    DataFrames costs gigabytes, so iter_records streams them and callers that
+    only need text should convert as they go.
+    """
+
+    name = "nq_tables_full"
+
+    def __init__(self, data_dir, max_rows: int = DEFAULT_MAX_ROWS):
+        """
+        Args:
+            data_dir: Directory holding the IBM release files.
+            max_rows: Example rows to keep per table.
+        """
+        self.data_dir = Path(data_dir)
+        self.max_rows = max_rows
+
+    def _frame(self, headers, cells) -> pd.DataFrame:
+        """Rebuild a table from IBM's headers and flat row-major cells."""
+        width = len(headers) or 1
+        rows = [
+            [str(c) for c in cells[start : start + width]]
+            for start in range(0, len(cells), width)
+        ][: self.max_rows]
+        columns = normalize_columns(headers) if headers else ["col_0"]
+        # A short final row would make the frame ragged.
+        rows = [(row + [""] * width)[:width] for row in rows]
+        return pd.DataFrame(rows, columns=columns, dtype=str)
+
+    def iter_records(self):
+        """Stream every corpus table as a TableRecord, in file order."""
+        path = self.data_dir / "corpus_structure.jsonl"
+        with open(path, encoding="utf-8") as handle:
+            for line in handle:
+                row = json.loads(line)
+                did = row["_id"]
+                yield TableRecord(
+                    table_id=did,
+                    recall_key=did,
+                    title=title_from_corpus_row(row),
+                    table=self._frame(row.get("headers") or [], row.get("cells") or []),
+                    group_id=NQTablesAdapter._page(did),
+                )
+
+    def examples(self, split: str) -> list[RetrievalExample]:
+        """Read one split's questions and their gold tables.
+
+        Args:
+            split: train, dev (or validation), or test.
+
+        Returns:
+            One RetrievalExample per (question, gold table) pair, with
+            query_id set so the evaluator scores each question once.
+        """
+        wanted = _SPLIT_ALIASES.get(split, split)
+        queries = {}
+        with open(self.data_dir / f"{wanted}_queries.jsonl", encoding="utf-8") as handle:
+            for line in handle:
+                row = json.loads(line)
+                queries[row["_id"]] = row["text"]
+
+        examples = []
+        with open(self.data_dir / f"{wanted}_qrels.jsonl", encoding="utf-8") as handle:
+            for line in handle:
+                row = json.loads(line)
+                text = queries.get(row["qid"])
+                if text is None:
+                    raise ValueError(f"qrel references unknown question {row['qid']!r}")
+                examples.append(
+                    RetrievalExample(
+                        query=text,
+                        table_id=unquote_did(row["did"]),
+                        query_id=row["qid"],
+                    )
+                )
+        if not examples:
+            raise ValueError(f"split {split!r} matched no questions")
+        return examples
+
+    def load(self, split: str) -> tuple[list[TableRecord], list[RetrievalExample]]:
+        """Materialize the whole corpus and one split's questions.
+
+        Holding 169,898 DataFrames is expensive; prefer iter_records plus
+        examples when only the text is needed.
+        """
+        return list(self.iter_records()), self.examples(split)
