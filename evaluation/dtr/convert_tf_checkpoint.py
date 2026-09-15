@@ -167,7 +167,22 @@ def build_state_dict(tensors: dict[str, np.ndarray]) -> dict:
 
 
 def load_config(checkpoint_dir: Path):
-    """Build a TapasConfig from the checkpoint's bert_config.json."""
+    """Build a TapasConfig from the checkpoint's bert_config.json.
+
+    bert_config.json carries only the BERT-level fields, so every TAPAS-specific
+    option falls back to a transformers default. One of those defaults is wrong
+    for these checkpoints and silently so:
+
+        reset_position_index_per_cell defaults to True, but the released dual
+        encoders were trained with it False.
+
+    TAPAS computes position ids inside the embedding layer from that flag, so
+    leaving it at the default feeds the weights structurally different position
+    indices than they were trained on. Nothing errors; retrieval just gets
+    worse, and more so for the deeper checkpoints. The value here matches the
+    config published alongside the same weights at
+    https://huggingface.co/xhluca/tapas-nq-hn-retriever-large-0.
+    """
     from transformers import TapasConfig
 
     cfg = json.loads((checkpoint_dir / "bert_config.json").read_text())
@@ -183,6 +198,7 @@ def load_config(checkpoint_dir: Path):
         max_position_embeddings=cfg["max_position_embeddings"],
         type_vocab_sizes=cfg["type_vocab_size"],
         initializer_range=cfg["initializer_range"],
+        reset_position_index_per_cell=False,
     )
 
 
