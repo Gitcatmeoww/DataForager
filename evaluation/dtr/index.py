@@ -94,6 +94,62 @@ class DTRIndex:
             group_ids=[t.group_id for t in tables],
         )
 
+    @classmethod
+    def build_streaming(cls, model, tokenizer, records, device,
+                        batch_size=DEFAULT_ENCODE_BATCH_SIZE, total=None, **kwargs):
+        """Build an index without holding the whole corpus in memory.
+
+        build() needs a sequence, so the caller must materialize every
+        TableRecord first. At NQ-Tables scale that is 169,898 DataFrames and
+        roughly 2.7 GB held for the duration of the encode, purely to hand the
+        encoder one batch at a time; it is enough to get the process killed on
+        a machine that is otherwise fine. This consumes an iterable instead and
+        keeps only the embeddings, which are 174 MB at 256 dimensions.
+
+        Args:
+            model: A TapasDualEncoder.
+            tokenizer: A TapasTokenizer.
+            records: An iterable of TableRecord, consumed once.
+            device: Torch device.
+            batch_size: Tables per forward pass.
+            total: Corpus size, for the progress bar only.
+            **kwargs: Passed to encode_corpus for each chunk.
+
+        Returns:
+            A DTRIndex.
+        """
+        chunks, table_ids, recall_keys, group_ids = [], [], [], []
+        batch = []
+
+        def flush():
+            if not batch:
+                return
+            chunks.append(
+                encode_corpus(model, tokenizer, batch, device,
+                              batch_size=batch_size, show_progress=False, **kwargs)
+            )
+            table_ids.extend(r.table_id for r in batch)
+            recall_keys.extend(r.recall_key for r in batch)
+            group_ids.extend(r.group_id for r in batch)
+            batch.clear()
+
+        bar = tqdm(total=total, desc="Encoding tables", unit="table")
+        for record in records:
+            batch.append(record)
+            if len(batch) >= batch_size:
+                bar.update(len(batch))
+                flush()
+        bar.update(len(batch))
+        flush()
+        bar.close()
+
+        return cls(
+            embeddings=np.concatenate(chunks, axis=0),
+            table_ids=table_ids,
+            recall_keys=recall_keys,
+            group_ids=group_ids,
+        )
+
     def search(self, query_embeddings: np.ndarray, top_k: int) -> np.ndarray:
         """Rank tables against each query by inner product.
 

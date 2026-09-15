@@ -95,15 +95,19 @@ def build_adapter(corpus: str, csv_dir=None, data_dir=None):
     """
     if corpus == "kaggleds":
         return KaggleDSAdapter(csv_dir=csv_dir)
-    if corpus == "nq":
+    if corpus in ("nq", "nq_full"):
         if not data_dir:
-            raise ValueError("--data-dir is required for the nq corpus")
+            raise ValueError(f"--data-dir is required for the {corpus} corpus")
         # Imported here because evaluation.nq.adapters imports this package,
         # and a module-level import would close the cycle.
-        from evaluation.nq.adapters import NQTablesAdapter
+        from evaluation.nq.adapters import NQTablesAdapter, NQTablesFullAdapter
 
-        return NQTablesAdapter(data_dir)
-    raise ValueError(f"unknown corpus {corpus!r}; expected kaggleds or nq")
+        if corpus == "nq":
+            return NQTablesAdapter(data_dir)
+        return NQTablesFullAdapter(data_dir)
+    raise ValueError(
+        f"unknown corpus {corpus!r}; expected kaggleds, nq or nq_full"
+    )
 
 
 def evaluate(checkpoint, split="test", csv_dir=None, device=None, batch_size=32,
@@ -113,20 +117,39 @@ def evaluate(checkpoint, split="test", csv_dir=None, device=None, batch_size=32,
     device = resolve_device(device)
     model, tokenizer = load_dual_encoder(checkpoint, device=device)
 
-    tables, examples = build_adapter(corpus, csv_dir=csv_dir, data_dir=data_dir).load(split)
+    adapter = build_adapter(corpus, csv_dir=csv_dir, data_dir=data_dir)
+
+    # Corpora large enough to matter expose iter_records, so the encoder can be
+    # fed a batch at a time rather than from a fully materialized list.
+    streaming = hasattr(adapter, "iter_records") and hasattr(adapter, "examples")
+    if streaming:
+        examples = adapter.examples(split)
+        tables = None
+    else:
+        tables, examples = adapter.load(split)
     if limit:
         examples = examples[:limit]
 
     if index_path and Path(index_path).exists():
         index = DTRIndex.load(index_path)
         print(f"Loaded index from {index_path}")
+    elif streaming:
+        index = DTRIndex.build_streaming(
+            model, tokenizer, adapter.iter_records(), device, batch_size=batch_size
+        )
+        if index_path:
+            index.save(index_path)
+            print(f"Saved index to {index_path}")
     else:
         index = DTRIndex.build(model, tokenizer, tables, device, batch_size=batch_size)
         if index_path:
             index.save(index_path)
             print(f"Saved index to {index_path}")
 
-    by_id = {t.table_id: t.recall_key for t in tables}
+    # For a streamed corpus the table id is the recall key, so the mapping comes
+    # from the index rather than from records we no longer hold.
+    by_id = (dict(zip(index.table_ids, index.recall_keys)) if streaming
+             else {t.table_id: t.recall_key for t in tables})
     queries, gold_ids = group_by_question(examples)
     gold_keys = [{by_id[table_id] for table_id in ids} for ids in gold_ids]
 
@@ -135,14 +158,15 @@ def evaluate(checkpoint, split="test", csv_dir=None, device=None, batch_size=32,
         batch_size=batch_size, show_progress=True,
     )
     ranking = index.search(query_embeddings, top_k=max(ks))
-    return recall_at_k(index, ranking, gold_keys, ks=ks), len(queries), len(tables)
+    n_tables = len(index.table_ids)
+    return recall_at_k(index, ranking, gold_keys, ks=ks), len(queries), n_tables
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--checkpoint", required=True, help="Converted checkpoint or run directory")
     parser.add_argument("--split", default="test")
-    parser.add_argument("--corpus", default="kaggleds", choices=("kaggleds", "nq"))
+    parser.add_argument("--corpus", default="kaggleds", choices=("kaggleds", "nq", "nq_full"))
     parser.add_argument("--csv-dir", default=None, help="Local split CSVs; omit to use the Hub")
     parser.add_argument("--data-dir", default=None, help="OpenTI release directory, for --corpus nq")
     parser.add_argument("--device", default=None)
