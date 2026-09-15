@@ -18,27 +18,28 @@ table name, matching the other baselines.
 
 | Method | Training data | R@1 | R@10 | R@20 | R@30 | R@40 | R@50 |
 | ------ | ------------- | --- | ---- | ---- | ---- | ---- | ---- |
-| DTR, no fine-tuning | none | .063 | .248 | .344 | .418 | .466 | .504 |
-| **DTR** | KaggleDS train | .208 | **.575** | .691 | .758 | .795 | **.823** |
-| DTR +hn | KaggleDS train | .206 | .565 | .686 | .743 | .783 | .810 |
-| HySE over DTR | KaggleDS train | .209 | .566 | .683 | .749 | .787 | .817 |
-| HySE over DTR +hn | KaggleDS train | .208 | .556 | .677 | .743 | .781 | .813 |
+| DTR, no fine-tuning | none | .057 | .239 | .341 | .404 | .454 | .491 |
+| **DTR** | KaggleDS train | .205 | .570 | .692 | .756 | .793 | .822 |
+| DTR +hn | KaggleDS train | .204 | .571 | .687 | .751 | .790 | .820 |
+| HySE over DTR | KaggleDS train | .212 | .566 | .683 | .748 | .787 | .820 |
+| HySE over DTR +hn | KaggleDS train | .208 | .566 | .682 | .747 | .786 | .815 |
 
 Three observations, all of which cut against the original paper's findings and
 are worth stating plainly:
 
-- **Fine-tuning is what matters.** It more than doubles R@10, from .248 to .575.
-- **Hard negatives do not help here** (-1.0 pp R@10), where the paper reports
-  +5 pp on NQ-Tables. Their corpus holds 169,898 tables, so a batch of 256
-  in-batch negatives covers 0.15% of it; here the same batch covers 9.4% of the
-  2,715 train tables, so in-batch negatives are already close to hard. Mining
-  also costs 11.5% of the training pairs, whose every candidate was a sibling.
-- **HySE does not transfer onto DTR** (+0.1 pp R@10, inside noise, and negative
-  at higher k). Fine-tuning specializes the table tower on real Kaggle tables,
-  and a hypothetical schema, with its invented column names and synthetic
-  values, is off-distribution for it. A general-purpose encoder treats real and
-  hypothetical tables alike, which is plausibly why HySE works there and not
-  here.
+- **Fine-tuning is what matters.** It more than doubles R@10, from .239 to .570.
+- **Hard negatives make no difference here** (+0.6 pp R@10, and within run-to-run
+  variance), where the paper reports +5 pp on NQ-Tables. Their corpus holds
+  169,898 tables, so a batch of 256 in-batch negatives covers 0.15% of it; here
+  the same batch covers 9.4% of the 2,715 train tables, so in-batch negatives are
+  already close to hard. Mining also costs 11.5% of the training pairs, whose
+  every candidate was a sibling.
+- **HySE does not transfer onto DTR** (-0.3 pp R@10 over DTR, -0.5 pp over
+  DTR +hn, and negative at every cut-off above 10). Fine-tuning specializes the
+  table tower on real Kaggle tables, and a hypothetical schema, with its invented
+  column names and synthetic values, is off-distribution for it. A general-purpose
+  encoder treats real and hypothetical tables alike, which is plausibly why HySE
+  works there and not here. The two mechanisms are alternatives, not complements.
 
 ## Pipeline
 
@@ -91,6 +92,21 @@ Verified against `tapas/models/table_retriever_model.py` rather than assumed:
 - **ICT pre-training is load-bearing.** Start from
   `tapas_dual_encoder_proj_256_*`, never from a raw `google/tapas-*` checkpoint:
   the paper's DTR-pt ablation falls from 76.0 to 47.8 R@10.
+- **`reset_position_index_per_cell` must be False.** The checkpoints ship a
+  `bert_config.json` carrying only BERT-level fields, so every TAPAS-specific
+  option falls back to a transformers default, and this one defaults to True
+  while the released weights were trained with it False. TAPAS derives position
+  ids inside the embedding layer from that flag, so the default feeds the weights
+  structurally different positions than they were trained on. Nothing errors, no
+  shape mismatch, no skipped weights; retrieval just gets quietly worse, and
+  worse the deeper the model. Running the released NQ retrievers with the default
+  cost `medium` 2.4 pp R@10 and `large` 14.7 pp, enough to put `large` *below*
+  `medium`, which is what exposed it. The correct value is the one published
+  alongside the same weights at `xhluca/tapas-nq-hn-retriever-large-0`.
+
+  KaggleDS training was self-consistent under the wrong flag, so correcting it
+  moved these numbers by under 1.5 pp in both directions. It is the cross-corpus
+  case, loading someone else's checkpoint, where it is catastrophic.
 
 The conversion is gated on a tensor-by-tensor diff against
 [`xhluca/tapas-nq-hn-retriever-medium-{0,1}`](https://huggingface.co/xhluca/tapas-nq-hn-retriever-medium-0),
