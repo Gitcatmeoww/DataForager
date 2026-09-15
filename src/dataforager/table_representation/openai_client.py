@@ -1,45 +1,88 @@
 from dotenv import load_dotenv
 import os
-from openai import AzureOpenAI
+from openai import AzureOpenAI, OpenAI
 import instructor
 
 load_dotenv()
 
+# Native OpenAI is the default and Azure the fallback.
+DEFAULT_PROVIDER = "openai"
+FALLBACK_PROVIDER = "azure"
+
+# Both providers return 429 under bulk load; the SDK backs off and retries.
+DEFAULT_MAX_RETRIES = 8
+
+
+def resolve_provider(provider=None):
+    """Pick the provider, preferring native OpenAI when it is usable."""
+    choice = (provider or os.getenv("DATAFORAGER_LLM_PROVIDER") or "").lower()
+    if choice in ("openai", "azure"):
+        return choice
+    if os.getenv("OPENAI_API_KEY"):
+        return DEFAULT_PROVIDER
+    return FALLBACK_PROVIDER
+
+
 class OpenAIClient:
-    def __init__(self):
-        # The underlying Azure OpenAI client is created lazily on first use (see
-        # the `client` property) so that importing modules which hold a
-        # module-level OpenAIClient() does not require credentials to be set.
+    def __init__(self, provider=None):
+        # The underlying client is created lazily on first use (see the `client`
+        # property) so that importing modules which hold a module-level
+        # OpenAIClient() does not require credentials to be set.
         self._client = None
+        self._provider = provider
         self.text_generation_model_default = "gpt-4o-mini"
         self.embedding_model_default = "text-embedding-3-small"
 
     @property
+    def provider(self):
+        """Which endpoint this client talks to, resolved on first access."""
+        return resolve_provider(self._provider)
+
+    @property
     def client(self):
-        """The Azure OpenAI client, instantiated on first access."""
+        """The OpenAI client, instantiated on first access."""
         if self._client is None:
-            self._client = AzureOpenAI(
-                azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-                api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-                api_version="2024-10-01-preview",
-            )
+            if self.provider == "openai":
+                self._client = OpenAI(
+                    api_key=os.getenv("OPENAI_API_KEY"),
+                    max_retries=DEFAULT_MAX_RETRIES,
+                )
+            else:
+                self._client = AzureOpenAI(
+                    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+                    api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+                    api_version="2024-10-01-preview",
+                    max_retries=DEFAULT_MAX_RETRIES,
+                )
         return self._client
 
-    def infer_metadata(self, messages, response_model, model=None, temperature=0.1):
+    def infer_metadata(self, messages, response_model, model=None, temperature=0.1,
+                       return_usage=False):
         if model is None:
             model = self.text_generation_model_default
         try:
             client = instructor.from_openai(self.client)
-            response = client.chat.completions.create(
+            if not return_usage:
+                return client.chat.completions.create(
+                    model=model,
+                    response_model=response_model,
+                    messages=messages,
+                    temperature=temperature
+                )
+            response, completion = client.chat.completions.create_with_completion(
                 model=model,
                 response_model=response_model,
                 messages=messages,
                 temperature=temperature
             )
-            return response
+            usage = getattr(completion, "usage", None)
+            return response, {
+                "prompt_tokens": getattr(usage, "prompt_tokens", 0) or 0,
+                "completion_tokens": getattr(usage, "completion_tokens", 0) or 0,
+            }
         except Exception as e:
             print(f"Error inferring metadata: {e}")
-            return
+            return (None, {"prompt_tokens": 0, "completion_tokens": 0}) if return_usage else None
 
     def infer_metadata_wo_instructor(self, messages, response_format=None, model=None):
         if model is None:

@@ -301,9 +301,12 @@ def hyse_search(initial_query, search_space=None, num_schema=1, k=10, table_name
 
     return top_k_results, single_hypo_schema_json, single_hypo_schema_embedding
 
-def infer_single_hypothetical_schema_with_examples(initial_query, schema_approach="relational"):
+def infer_single_hypothetical_schema_with_examples(initial_query, schema_approach="relational", return_usage=False):
     """
     Generate a single hypothetical schema with example data using structured output
+
+    When return_usage is set, also return the call's token usage, which the cost
+    and latency accounting needs. Returns (result, usage) in that case.
     """
     try:
         # Get a diverse example to inspire different designs
@@ -346,11 +349,11 @@ def infer_single_hypothetical_schema_with_examples(initial_query, schema_approac
         ]
         
         # Add some randomness to encourage diversity (temperature)
-        result = openai_client.infer_metadata(messages, response_model, temperature=0.8)
+        result = openai_client.infer_metadata(messages, response_model, temperature=0.8, return_usage=return_usage)
         return result
     except Exception as e:
         logging.exception(f"Error inferring single hypothetical schema with examples: {e}")
-        return None
+        return (None, {"prompt_tokens": 0, "completion_tokens": 0}) if return_usage else None
 
 def infer_single_hypothetical_schema(initial_query, prompt_template):
     prompt = format_prompt(prompt_template=prompt_template, query=initial_query)
