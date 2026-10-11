@@ -8,7 +8,16 @@ import pytest
 torch = pytest.importorskip("torch", reason="DTR needs the optional dtr extra")
 
 from evaluation.dtr.adapters import RetrievalExample, TableRecord
-from evaluation.dtr.evaluate_dtr import build_adapter, group_by_question, recall_at_k
+from evaluation.dtr.evaluate_dtr import (
+    build_adapter,
+    evaluate,
+    group_by_question,
+    query_hits,
+    query_partitions,
+    recall_at_k,
+    recall_by_partition,
+    table_partitions,
+)
 from evaluation.dtr.index import DTRIndex
 from evaluation.dtr.train import group_aware_batches
 
@@ -104,6 +113,123 @@ def test_recall_handles_mixed_bare_and_set_golds():
     ranking = np.array([[0, 1], [1, 0]])
 
     assert recall_at_k(index, ranking, ["a", {"a", "b"}], ks=(1,))[1] == 1.0
+
+
+# --- per-partition recall -------------------------------------------------
+
+def test_query_hits_marks_the_rank_of_each_gold():
+    index = make_index(["a", "b", "c"])
+    ranking = np.array([[1, 0, 2], [2, 1, 0]])
+
+    hits = query_hits(index, ranking, ["a", "c"])
+
+    assert hits.tolist() == [[False, True, False], [True, False, False]]
+
+
+def test_recall_by_partition_scores_each_partition_on_its_own_queries():
+    hits = np.array([
+        [True, False],   # single, hit at 1
+        [False, True],   # single, hit at 2
+        [False, False],  # multi, miss
+        [False, True],   # multi, hit at 2
+    ])
+    labels = ["single_table", "single_table", "multi_table", "multi_table"]
+
+    parts = recall_by_partition(hits, labels, ks=(1, 2))
+
+    assert parts["single_table"] == {"queries": 2, "recall": {1: 0.5, 2: 1.0}}
+    assert parts["multi_table"] == {"queries": 2, "recall": {1: 0.0, 2: 0.5}}
+
+
+def test_partition_recalls_recombine_to_the_overall_recall():
+    rng = np.random.default_rng(0)
+    hits = rng.random((50, 5)) < 0.2
+    labels = rng.choice(["single_table", "multi_table"], size=50)
+
+    parts = recall_by_partition(hits, labels, ks=(1, 5))
+    overall = hits[:, :5].any(axis=1).mean()
+    weighted = sum(p["queries"] * p["recall"][5] for p in parts.values()) / 50
+
+    assert weighted == pytest.approx(overall)
+
+
+def test_recall_by_partition_rejects_a_label_count_mismatch():
+    with pytest.raises(ValueError, match="2 labels for 3 queries"):
+        recall_by_partition(np.zeros((3, 2), dtype=bool), ["a", "b"])
+
+
+def kaggle_table(database_name, table_name, suffix=""):
+    return TableRecord(
+        table_id=f"{database_name}::{table_name}{suffix}", recall_key=table_name,
+        title=table_name, table=pd.DataFrame({"c": ["v"]}), group_id=database_name,
+    )
+
+
+# Two unrelated datasets that both ship a train.csv, with different labels.
+SHARED_NAME_TABLES = [kaggle_table("Bike Rental", "train.csv"), kaggle_table("Big Mart", "train.csv")]
+SHARED_NAME_ROWS = [("Bike Rental", "train.csv", "single_table"), ("Big Mart", "train.csv", "multi_table")]
+
+
+def test_dataset_scheme_labels_tables_that_share_a_name_independently():
+    partition_of = table_partitions(SHARED_NAME_TABLES, SHARED_NAME_ROWS, scheme="dataset")
+
+    assert partition_of == {
+        "Bike Rental::train.csv": "single_table",
+        "Big Mart::train.csv": "multi_table",
+    }
+
+
+def test_name_scheme_gives_every_same_named_table_the_last_label_read():
+    # Mirrors table_count_evaluator.py, whose labels produced the paper's counts.
+    partition_of = table_partitions(SHARED_NAME_TABLES, SHARED_NAME_ROWS, scheme="name")
+
+    assert set(partition_of.values()) == {"multi_table"}
+
+
+def test_duplicate_names_within_one_dataset_share_its_label():
+    tables = [kaggle_table("Fast Food", "data.csv"), kaggle_table("Fast Food", "data.csv", "#1")]
+    rows = [("Fast Food", "data.csv", "multi_table")] * 2
+
+    assert set(table_partitions(tables, rows).values()) == {"multi_table"}
+
+
+def test_table_partitions_strips_whitespace_like_the_adapter():
+    # Kaggle dataset names carry stray spaces, which the adapter strips.
+    tables = [kaggle_table("Bank Customer Churn Prediction", "Churn_Modelling.csv")]
+    rows = [("Bank Customer Churn Prediction ", "Churn_Modelling.csv", "single_table")]
+
+    assert table_partitions(tables, rows) == {
+        "Bank Customer Churn Prediction::Churn_Modelling.csv": "single_table"
+    }
+
+
+def test_table_partitions_rejects_an_unlabeled_table():
+    with pytest.raises(ValueError, match="1 tables have no partition label"):
+        table_partitions([kaggle_table("Other", "x.csv")], SHARED_NAME_ROWS)
+
+
+def test_table_partitions_rejects_an_unknown_scheme():
+    with pytest.raises(ValueError, match="unknown partition scheme"):
+        table_partitions(SHARED_NAME_TABLES, SHARED_NAME_ROWS, scheme="schema")
+
+
+def test_query_partitions_follow_the_gold_table():
+    partition_of = {"t1": "single_table", "t2": "multi_table"}
+
+    assert query_partitions([["t1"], ["t2"], ["t1"]], partition_of) == [
+        "single_table", "multi_table", "single_table",
+    ]
+
+
+def test_query_partitions_reject_golds_in_different_partitions():
+    with pytest.raises(ValueError, match="span partitions"):
+        query_partitions([["t1", "t2"]], {"t1": "single_table", "t2": "multi_table"})
+
+
+def test_partitioning_is_refused_outside_kaggleds():
+    # Raised before any checkpoint is loaded, so the path need not exist.
+    with pytest.raises(ValueError, match="only defined for the kaggleds corpus"):
+        evaluate("no/such/checkpoint", corpus="nq", partition_by="dataset")
 
 
 # --- group_by_question ----------------------------------------------------

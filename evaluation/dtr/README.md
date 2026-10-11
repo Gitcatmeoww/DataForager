@@ -41,6 +41,35 @@ are worth stating plainly:
   encoder treats real and hypothetical tables alike, which is plausibly why HySE
   works there and not here. The two mechanisms are alternatives, not complements.
 
+### Single- vs multi-table datasets
+
+Recall split by whether the gold table's dataset has one table or several in the
+test split, next to the HySE and Semantic Task numbers from
+`eval/results/table_count_results/` (the source of the paper's Table 1 partition
+rows; Semantic Task R@20+ recovered from the per-row files there).
+
+| Partition | Method | R@10 | R@20 | R@30 | R@50 |
+| --------- | ------ | ---- | ---- | ---- | ---- |
+| single-table (2,826 queries) | HySE | **.777** | **.841** | **.878** | **.913** |
+| | Semantic Task | .747 | .823 | .860 | .898 |
+| | DTR | .687 | .763 | .802 | .855 |
+| multi-table (4,185 queries) | HySE | **.496** | .633 | .702 | .780 |
+| | Semantic Task | .483 | .607 | .676 | .752 |
+| | DTR | .490 | **.645** | **.725** | **.799** |
+
+HySE's lead over DTR comes almost entirely from single-table datasets (+9.0 pp
+R@10). On multi-table datasets, where sibling tables compete, DTR is within
+0.6 pp of HySE at R@10 and overtakes it from R@20, consistent with training
+having taught it to separate siblings that a frozen encoder cannot.
+
+These rows use `--partition-by name`, which labels tables by bare file name the
+way `table_count_evaluator.py` did, so that all three methods are split on
+the same queries. That is subtly wrong: 74 file names (`train.csv`, `data.csv`,
+...) recur across unrelated datasets and take one shared label, mislabelling 90
+queries. `--partition-by dataset` labels each table by its own dataset (2,832 /
+4,179 queries) and moves DTR by at most 0.2 pp; HySE and Semantic Task have not
+been rerun that way.
+
 ## Pipeline
 
 The stages are separate so each can be rerun without repeating the others.
@@ -68,12 +97,18 @@ python -m evaluation.dtr.evaluate_dtr --checkpoint evaluation/dtr/runs/dtr \
     --split test --csv-dir evaluation/huggingface --index-path evaluation/dtr/runs/dtr_test_index.npz
 PYTHONPATH=src python -m evaluation.dtr.hyse_over_dtr --model evaluation/dtr/runs/dtr \
     --split test --csv-dir evaluation/huggingface --index-path evaluation/dtr/runs/dtr_test_index.npz
+
+# 5. Optionally, split recall by single- vs multi-table datasets.
+PYTHONPATH=src python -m evaluation.dtr.evaluate_dtr --checkpoint evaluation/dtr/runs/dtr \
+    --split test --csv-dir evaluation/huggingface --index-path evaluation/dtr/runs/dtr_test_index.npz \
+    --partition-by name
 ```
 
 Checkpoints come from the [TAPAS repository](https://github.com/google-research/tapas/blob/master/DENSE_TABLE_RETRIEVER.md),
 under `https://storage.googleapis.com/tapas_models/2021_04_27/`. Only
-`hyse_over_dtr` touches Postgres, to read cached hypothetical schemas; training,
-indexing, and evaluation read the split CSVs and need no database.
+`hyse_over_dtr` and `evaluate_dtr --partition-by` touch Postgres, to read cached
+hypothetical schemas and partition labels respectively; training, indexing, and
+evaluation otherwise read the split CSVs and need no database.
 
 ## Details that are easy to get wrong
 
