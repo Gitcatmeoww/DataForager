@@ -30,7 +30,7 @@ pretty_name: "KaggleDS: Corpus for Task-based Dataset Search"
 
 KaggleDS is a benchmark corpus for evaluating **task-driven dataset search** — retrieving relevant tables from natural-language descriptions of analytical goals (e.g., _"Analyze trends in the California real estate market over the past decade"_) rather than keyword or schema-level queries.
 
-The corpus was introduced in the paper **"DataForager: Enabling Flexible Need-Aligned Dataset Navigation"**.
+The corpus was introduced in the paper [**"Bridging Search Intent and Tabular Data in Dataset Search"**](https://arxiv.org/abs/2610.33936) (arXiv preprint, 2026).
 
 ## Corpus Overview
 

@@ -10,12 +10,39 @@ DataForager asks an LLM to imagine the database schema(s) that *would* support t
 task, embeds those hypothetical schemas, and retrieves real tables whose metadata
 embeddings are most similar. Results can then be interactively refined with
 natural-language filters over dataset metadata (temporal/geographic granularity,
-size, popularity, tags, …).
+size, popularity, tags, …); the paper calls this component **FlexPrune**.
 
-This repository accompanies the paper *"DataForager: Enabling Flexible
-Need-Aligned Dataset Search"* (under review). The evaluation corpus, **KaggleDS**,
-is published on the HuggingFace Hub:
+This repository accompanies the paper
+[*"Bridging Search Intent and Tabular Data in Dataset Search"*](https://arxiv.org/abs/2610.33936)
+(arXiv preprint, 2026). The evaluation corpus, **KaggleDS**, is published on the
+HuggingFace Hub:
 [`trl-lab/kaggleds-corpus-task-based-search-bench`](https://huggingface.co/datasets/trl-lab/kaggleds-corpus-task-based-search-bench).
+
+---
+
+## Results
+
+Recall on the KaggleDS test split. HySE needs no training data;
+the DTR rows are a TAPAS dense table retriever fine-tuned on the KaggleDS train
+split.
+
+| Method | R@10 | R@20 | R@30 | R@50 |
+| ------ | ---- | ---- | ---- | ---- |
+| Syntactic keyword (BM25) | 0.179 | 0.228 | 0.256 | 0.290 |
+| Semantic keyword | 0.336 | 0.446 | 0.512 | 0.593 |
+| Semantic task (dense query embedding) | 0.589 | 0.694 | 0.749 | 0.811 |
+| DTR, fine-tuned | 0.570 | 0.692 | 0.756 | 0.822 |
+| DTR, fine-tuned + hard negatives | 0.571 | 0.687 | 0.751 | 0.820 |
+| **HySE** | **0.609** | **0.717** | **0.773** | **0.834** |
+
+- **Transfer to NQ-Tables** (959 questions over 169,898 Wikipedia tables), with
+  HySE configured exactly as on KaggleDS: R@10 0.837 vs. 0.779 for the released
+  DTR-large retriever (+5.8 pp), and +6.0 pp at R@30.
+- **HySE → FlexPrune**: one natural-language metadata filter after HySE raises
+  R@10 from 0.644 (semantic task search + tag filter) to 0.704 (+6.0 pp).
+
+See [`evaluation/README.md`](evaluation/README.md) for how each number is
+produced.
 
 ---
 
@@ -30,11 +57,14 @@ src/dataforager/          Installable Python library
   chat/                   In-memory chat/session history
   db/                     Postgres (pgvector) connection & corpus construction
   utils/                  Shared helpers
-evaluation/               Evaluation harness + experiments
+evaluation/               Evaluation harness + experiments (see its README)
   evaluator.py            Base evaluator (HySE vs. semantic/keyword baselines)
+  significance.py         Bootstrap intervals + paired McNemar tests for recall
   schema_type_eval/       Normalized vs. denormalized analysis
   table_count_eval/       Single- vs. multi-table analysis
   elastic_search/         Keyword-search baseline (Elasticsearch)
+  dtr/                    DTR baseline: TAPAS dense retriever, training, HySE fusion
+  nq/                     NQ-Tables transfer corpus + HySE evaluation
   dataset_construction/   Notebook that builds the KaggleDS corpus
   huggingface/            Script + dataset card for publishing KaggleDS
   data/load_kaggleds.py   Loader that pulls KaggleDS from the Hub
@@ -134,6 +164,12 @@ python -m evaluation.schema_type_eval.schema_type_evaluator    # normalized vs. 
 python -m evaluation.table_count_eval.table_count_evaluator    # single- vs. multi-table
 ```
 
+The DTR baseline and the NQ-Tables transfer evaluation each have their own
+pipeline; see [`evaluation/dtr/README.md`](evaluation/dtr/README.md) and
+[`evaluation/nq/README.md`](evaluation/nq/README.md). Confidence intervals and
+paired significance tests live in
+[`evaluation/significance.py`](evaluation/significance.py).
+
 To rebuild the corpus from scratch, see
 [`evaluation/dataset_construction/kaggle_eval_datasets.ipynb`](evaluation/dataset_construction/kaggle_eval_datasets.ipynb).
 
@@ -148,14 +184,13 @@ require Postgres/Elasticsearch and are run manually, not by `pytest`.)
 
 ## Citation
 
-If you use DataForager or the KaggleDS corpus, please cite the paper (currently
-under review):
+If you use DataForager or the KaggleDS corpus, please cite the paper:
 
 ```bibtex
-@misc{dataforager,
-  title  = {DataForager: Enabling Flexible Need-Aligned Dataset Search},
-  note   = {Under review},
-  year   = {2026}
+@article{arxiv2610.33936,
+  title   = {Bridging Search Intent and Tabular Data in Dataset Search},
+  journal = {arXiv preprint arXiv:2610.33936},
+  year    = {2026}
 }
 ```
 
